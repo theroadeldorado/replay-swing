@@ -1,0 +1,2077 @@
+"""
+Golf Swing Capture - Multi-Camera Swing Recording System
+========================================================
+Records golf swings triggered by audio detection with multi-camera sync support.
+Features:
+- Audio-triggered recording (2s pre-buffer + 4s post-trigger)
+- Multi-camera synchronization with network camera support
+- Audio feature extraction and classification (heuristic + learned)
+- Person detection for auto-arm/disarm
+- Looping playback with speed control and frame stepping
+- Picture-in-Picture overlay window (always on top)
+- Drawing overlay (lines, circles) with persistence
+- Side-by-side comparison view
+- Session-based organization with thumbnails
+- Settings persistence across sessions
+- Keyboard shortcuts
+"""
+
+import sys
+import os
+import logging
+import logging.handlers
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List, Dict
+
+import cv2
+import numpy as np
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QSlider, QComboBox, QFrame,
+    QGroupBox, QSpinBox, QDoubleSpinBox,
+    QCheckBox, QMessageBox, QFileDialog, QMenu, QStatusBar,
+    QSizePolicy, QDialog, QDialogButtonBox, QListWidget, QListWidgetItem,
+    QProgressBar, QTabWidget, QLineEdit, QToolBar,
+)
+from PyQt6.QtCore import (
+    Qt, QTimer, pyqtSignal, QSize, QPoint, QRect,
+)
+from PyQt6.QtGui import (
+    QImage, QPixmap, QPainter, QColor, QFont, QPen,
+    QIcon, QAction, QPalette, QCursor, QShortcut, QKeySequence,
+)
+
+# Local imports
+from config import (
+    AppConfig, CameraPreset, load_settings, save_settings,
+    SETTINGS_FILE, TRAINING_DATA_DIR, LOG_DIR,
+)
+from audio_engine import AudioDetector, AudioClassifier, enumerate_audio_devices, AUDIO_AVAILABLE
+from camera_engine import CameraCapture, PersonDetector, DroidCamScanner, test_droidcam_connection, test_network_camera, droidcam_url
+from recording import RecordingManager, FrameBuffer
+from drawing_overlay import DrawingOverlay, LineShape, CircleShape
+from comparison_view import ComparisonWindow
+from ui_components import (
+    VideoPlayer, PiPWindow, ThumbnailWidget, ClipGallery,
+    QTextEditLogHandler, LogPanel, composite_grid,
+)
+
+
+# ============================================================================
+# Logging Setup
+# ============================================================================
+
+def setup_logging() -> QTextEditLogHandler:
+    """Configure logging with file and UI handlers."""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = LOG_DIR / "swing_capture.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    # File handler (rotating)
+    fh = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"
+    ))
+    root.addHandler(fh)
+
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    root.addHandler(ch)
+
+    # UI handler
+    ui_handler = QTextEditLogHandler()
+    ui_handler.setLevel(logging.INFO)
+    ui_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+    root.addHandler(ui_handler)
+
+    return ui_handler
+
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# QR Code Helper
+# ============================================================================
+
+try:
+    import qrcode as _qrcode_mod
+    QR_AVAILABLE = True
+except ImportError:
+    QR_AVAILABLE = False
+
+
+def _make_qr_pixmap(data: str, size: int = 180) -> Optional[QPixmap]:
+    """Generate a QR code QPixmap. Returns None if qrcode lib unavailable."""
+    if not QR_AVAILABLE:
+        return None
+    try:
+        qr = _qrcode_mod.QRCode(
+            version=None, error_correction=_qrcode_mod.constants.ERROR_CORRECT_M,
+            box_size=1, border=2,
+        )
+        qr.add_data(data)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+        rows = len(matrix)
+        cols = len(matrix[0]) if rows else 0
+        # Render into QImage
+        scale = max(1, size // max(rows, cols, 1))
+        img_w, img_h = cols * scale, rows * scale
+        img = QImage(img_w, img_h, QImage.Format.Format_RGB888)
+        img.fill(QColor(255, 255, 255))
+        painter = QPainter(img)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0))
+        for r, row in enumerate(matrix):
+            for c, cell in enumerate(row):
+                if cell:
+                    painter.drawRect(c * scale, r * scale, scale, scale)
+        painter.end()
+        pixmap = QPixmap.fromImage(img).scaled(
+            size, size, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+        return pixmap
+    except Exception:
+        return None
+
+
+# ============================================================================
+# Network Camera Dialog (replaces PhoneSetupDialog)
+# ============================================================================
+
+DROIDCAM_CLIENT_URL = "https://droidcam.app/go/droidCam.client.setup.exe"
+DROIDCAM_CLIENT_FILENAME = "DroidCam.Client.Setup.exe"
+
+CAMERA_APP_PRESETS = [
+    {
+        "name": "DroidCam (Android)",
+        "url_template": "http://{ip}:4747/mjpegfeed",
+        "help": "Open DroidCam on Android phone. Enter IP shown in the app.",
+        "default_port": 4747,
+    },
+    {
+        "name": "IP Webcam (Android)",
+        "url_template": "http://{ip}:8080/video",
+        "help": "Install 'IP Webcam' from Play Store. Start server, enter IP shown.",
+        "default_port": 8080,
+    },
+    {
+        "name": "DroidCam Desktop Client (iOS)",
+        "url_template": None,
+        "help": "iOS requires the DroidCam PC client. Click install below, then use Detect USB.",
+        "show_installer": True,
+    },
+    {
+        "name": "Custom URL (MJPEG/RTSP)",
+        "url_template": None,
+        "help": "Enter the full stream URL. Examples:\n  http://192.168.1.50:8080/video\n  rtsp://192.168.1.50:554/stream",
+    },
+]
+
+_DIALOG_SS = """
+    QDialog { background-color: #1e1e1e; }
+    QLabel { color: #ccc; }
+    QPushButton {
+        background-color: #4a9eff; color: white; border: none;
+        border-radius: 6px; padding: 10px 20px; font-weight: bold; font-size: 13px;
+    }
+    QPushButton:hover { background-color: #5aafff; }
+    QPushButton:disabled { background-color: #555; color: #999; }
+    QLineEdit {
+        background-color: #2d2d2d; color: #ccc;
+        border: 1px solid #444; border-radius: 4px; padding: 6px 10px; font-size: 13px;
+    }
+    QProgressBar {
+        background-color: #333; border: 1px solid #555; border-radius: 4px;
+    }
+    QProgressBar::chunk { background-color: #4a9eff; border-radius: 3px; }
+"""
+
+_PRESET_BTN_SS = """
+    QPushButton {
+        background-color: #2d2d2d; color: #ccc; border: 1px solid #444;
+        border-radius: 6px; padding: 8px 16px; font-size: 13px;
+        text-align: left;
+    }
+    QPushButton:hover { background-color: #3d3d3d; border-color: #4a9eff; }
+    QPushButton:checked { background-color: #4a9eff; color: white; border-color: #4a9eff; }
+"""
+
+
+class NetworkCameraDialog(QDialog):
+    """Dialog for adding any network camera (DroidCam, IP Webcam, RTSP, MJPEG, etc.)."""
+
+    camera_added = pyqtSignal(str, str)  # url, label
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Network Camera")
+        self.setFixedSize(520, 640)
+        self.setStyleSheet(_DIALOG_SS)
+
+        self._selected_preset = None
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        # Title
+        title = QLabel("Add Network Camera")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #fff; padding: 4px;")
+        layout.addWidget(title)
+
+        # ---- Quick Setup (pick an app) ----
+        preset_group = QGroupBox("Quick Setup (pick an app)")
+        preset_group.setStyleSheet(
+            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
+            "border-radius: 8px; margin-top: 12px; padding-top: 16px; }"
+        )
+        preset_layout = QVBoxLayout(preset_group)
+        preset_layout.setSpacing(4)
+
+        self._preset_buttons = []
+        for i, preset in enumerate(CAMERA_APP_PRESETS):
+            btn = QPushButton(preset["name"])
+            btn.setCheckable(True)
+            btn.setStyleSheet(_PRESET_BTN_SS)
+            btn.clicked.connect(lambda checked, idx=i: self._on_preset_selected(idx))
+            preset_layout.addWidget(btn)
+            self._preset_buttons.append(btn)
+
+        layout.addWidget(preset_group)
+
+        # ---- Connection section ----
+        self.conn_frame = QGroupBox("Connection")
+        self.conn_frame.setStyleSheet(
+            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
+            "border-radius: 8px; margin-top: 12px; padding-top: 16px; }"
+        )
+        conn_layout = QVBoxLayout(self.conn_frame)
+        conn_layout.setSpacing(8)
+
+        # Help text
+        self.help_label = QLabel("Select a camera app above to get started.")
+        self.help_label.setWordWrap(True)
+        self.help_label.setStyleSheet("color: #aaa; font-size: 12px; padding: 2px;")
+        conn_layout.addWidget(self.help_label)
+
+        # URL row (shown for Custom URL preset)
+        self.url_row = QWidget()
+        url_row_layout = QHBoxLayout(self.url_row)
+        url_row_layout.setContentsMargins(0, 0, 0, 0)
+        url_row_layout.addWidget(QLabel("URL:"))
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("http://192.168.1.50:8080/video")
+        url_row_layout.addWidget(self.url_input, stretch=1)
+        self.url_row.setVisible(False)
+        conn_layout.addWidget(self.url_row)
+
+        # IP row (shown for presets with url_template)
+        self.ip_row = QWidget()
+        ip_row_layout = QHBoxLayout(self.ip_row)
+        ip_row_layout.setContentsMargins(0, 0, 0, 0)
+        ip_row_layout.addWidget(QLabel("IP:"))
+        self.ip_input = QLineEdit()
+        self.ip_input.setPlaceholderText("192.168.1.50")
+        ip_row_layout.addWidget(self.ip_input, stretch=1)
+        self.ip_row.setVisible(False)
+        conn_layout.addWidget(self.ip_row)
+
+        # Test button
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.setEnabled(False)
+        self.test_btn.clicked.connect(self._test_connection)
+        conn_layout.addWidget(self.test_btn)
+
+        # Status
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        conn_layout.addWidget(self.status_label)
+
+        layout.addWidget(self.conn_frame)
+
+        # ---- DroidCam Desktop Client section (hidden by default) ----
+        self.client_frame = QGroupBox("DroidCam Desktop Client (iOS)")
+        self.client_frame.setStyleSheet(
+            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
+            "border-radius: 8px; margin-top: 12px; padding-top: 16px; }"
+        )
+        client_layout = QVBoxLayout(self.client_frame)
+        client_layout.setSpacing(6)
+
+        client_label = QLabel(
+            '<p style="color:#aaa; font-size:11px;">'
+            'iOS DroidCam requires the Windows desktop client to create a virtual webcam. '
+            'After installing, connect via the DroidCam client, then use "Detect USB" '
+            'in camera settings.</p>'
+        )
+        client_label.setTextFormat(Qt.TextFormat.RichText)
+        client_label.setWordWrap(True)
+        client_layout.addWidget(client_label)
+
+        self.install_client_btn = QPushButton("Download && Install DroidCam Client")
+        self.install_client_btn.setStyleSheet(
+            "background-color: #e67e22; font-size: 13px; padding: 10px; border-radius: 6px;"
+        )
+        self.install_client_btn.clicked.connect(self._download_and_install_client)
+        client_layout.addWidget(self.install_client_btn)
+
+        self.client_status_label = QLabel("")
+        self.client_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.client_status_label.setStyleSheet("color: #888; font-size: 11px; padding: 2px;")
+        self.client_status_label.setWordWrap(True)
+        client_layout.addWidget(self.client_status_label)
+
+        self.client_progress = QProgressBar()
+        self.client_progress.setVisible(False)
+        self.client_progress.setFixedHeight(8)
+        self.client_progress.setTextVisible(False)
+        client_layout.addWidget(self.client_progress)
+
+        self.client_frame.setVisible(False)
+        layout.addWidget(self.client_frame)
+
+        # Spacer
+        layout.addStretch()
+
+        # Done button
+        done_btn = QPushButton("Done")
+        done_btn.setStyleSheet(
+            "background-color: #3d3d3d; color: #ccc; border: 1px solid #555;"
+        )
+        done_btn.clicked.connect(self.accept)
+        layout.addWidget(done_btn)
+
+    def _on_preset_selected(self, index: int):
+        """Handle preset button click."""
+        # Update button checked states
+        for i, btn in enumerate(self._preset_buttons):
+            btn.setChecked(i == index)
+
+        preset = CAMERA_APP_PRESETS[index]
+        self._selected_preset = preset
+
+        # Update help text
+        self.help_label.setText(preset["help"])
+
+        has_template = preset.get("url_template") is not None
+        is_custom = preset["name"].startswith("Custom")
+        show_installer = preset.get("show_installer", False)
+
+        # Show/hide IP vs URL input
+        self.ip_row.setVisible(has_template)
+        self.url_row.setVisible(is_custom)
+        self.test_btn.setEnabled(has_template or is_custom)
+
+        # Show/hide installer section
+        self.client_frame.setVisible(show_installer)
+
+        # Hide connection section for installer-only presets
+        self.conn_frame.setVisible(has_template or is_custom)
+
+        # Clear previous state
+        self.status_label.setText("")
+        self.ip_input.clear()
+        self.url_input.clear()
+
+    def _build_url(self) -> Optional[str]:
+        """Build the stream URL from the current preset and input."""
+        if self._selected_preset is None:
+            return None
+
+        template = self._selected_preset.get("url_template")
+        if template:
+            ip = self.ip_input.text().strip()
+            if not ip:
+                return None
+            return template.format(ip=ip)
+
+        # Custom URL mode
+        url = self.url_input.text().strip()
+        return url if url else None
+
+    def _test_connection(self):
+        """Test the network camera URL."""
+        url = self._build_url()
+        if not url:
+            self.status_label.setText("Please enter an IP address or URL.")
+            self.status_label.setStyleSheet("color: #e74c3c; font-size: 12px; padding: 4px;")
+            return
+
+        self.test_btn.setEnabled(False)
+        self.test_btn.setText("Testing...")
+        self.status_label.setText(f"Testing {url}...")
+        self.status_label.setStyleSheet("color: #f1c40f; font-size: 12px; padding: 4px;")
+        QApplication.processEvents()
+
+        success, message = test_network_camera(url)
+
+        self.test_btn.setEnabled(True)
+        self.test_btn.setText("Test Connection")
+
+        if success:
+            self.status_label.setText(f"{message}")
+            self.status_label.setStyleSheet(
+                "color: #2ecc71; font-size: 12px; padding: 4px; font-weight: bold;"
+            )
+            # Build label from preset name and IP/URL
+            preset_name = self._selected_preset["name"] if self._selected_preset else "Network Camera"
+            ip_or_url = self.ip_input.text().strip() or self.url_input.text().strip()
+            label = f"{preset_name} ({ip_or_url})"
+            self.camera_added.emit(url, label)
+            logger.info("Network camera verified: %s", url)
+        else:
+            self.status_label.setText(f"Failed: {message}")
+            self.status_label.setStyleSheet("color: #e74c3c; font-size: 12px; padding: 4px;")
+            logger.warning("Network camera test failed for %s: %s", url, message)
+
+    def _download_and_install_client(self):
+        """Download and launch the DroidCam Windows client installer."""
+        import tempfile
+        import urllib.request
+        import subprocess
+
+        self.install_client_btn.setEnabled(False)
+        self.install_client_btn.setText("Downloading...")
+        self.client_progress.setVisible(True)
+        self.client_progress.setValue(0)
+        self.client_status_label.setText("Downloading DroidCam Client...")
+        self.client_status_label.setStyleSheet("color: #f1c40f; font-size: 11px; padding: 2px;")
+        QApplication.processEvents()
+
+        download_dir = Path(tempfile.gettempdir())
+        installer_path = download_dir / DROIDCAM_CLIENT_FILENAME
+
+        try:
+            def _progress_hook(block_num, block_size, total_size):
+                if total_size > 0:
+                    pct = min(100, int(block_num * block_size * 100 / total_size))
+                    self.client_progress.setValue(pct)
+                    QApplication.processEvents()
+
+            urllib.request.urlretrieve(DROIDCAM_CLIENT_URL, str(installer_path), _progress_hook)
+
+            self.client_progress.setValue(100)
+            self.client_status_label.setText("Download complete. Launching installer...")
+            self.client_status_label.setStyleSheet("color: #2ecc71; font-size: 11px; padding: 2px;")
+            QApplication.processEvents()
+
+            subprocess.Popen([str(installer_path)], shell=True)
+
+            self.client_status_label.setText(
+                "Installer launched! Follow the setup wizard.\n"
+                "After installing, open the DroidCam client and connect to your phone,\n"
+                "then use 'Detect USB' in camera settings."
+            )
+            logger.info("DroidCam client installer launched from %s", installer_path)
+
+        except Exception as e:
+            self.client_status_label.setText(f"Download failed: {e}")
+            self.client_status_label.setStyleSheet("color: #e74c3c; font-size: 11px; padding: 2px;")
+            logger.error("DroidCam client download failed: %s", e)
+
+        finally:
+            self.client_progress.setVisible(False)
+            self.install_client_btn.setEnabled(True)
+            self.install_client_btn.setText("Download && Install DroidCam Client")
+
+
+# ============================================================================
+# Camera Settings Dialog
+# ============================================================================
+
+class CameraSettingsDialog(QDialog):
+    """Dialog for configuring cameras with phone setup integration."""
+
+    def __init__(self, config: AppConfig, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.setWindowTitle("Camera Settings")
+        self.setMinimumSize(550, 520)
+        self.setStyleSheet("""
+            QDialog { background-color: #2d2d2d; }
+            QLabel { color: #ccc; }
+            QListWidget {
+                background-color: #1e1e1e; border: 1px solid #444;
+                border-radius: 4px; color: #ccc;
+            }
+            QListWidget::item:selected { background-color: #4a9eff; }
+            QPushButton {
+                background-color: #4a9eff; color: white; border: none;
+                border-radius: 4px; padding: 8px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #5aafff; }
+            QLineEdit {
+                background-color: #1e1e1e; color: #ccc;
+                border: 1px solid #444; border-radius: 4px; padding: 4px 8px;
+            }
+            QComboBox {
+                background-color: #1e1e1e; border: 1px solid #444;
+                border-radius: 4px; padding: 4px 8px; color: #ccc;
+            }
+            QSpinBox, QDoubleSpinBox {
+                background-color: #1e1e1e; border: 1px solid #444;
+                border-radius: 4px; padding: 4px; color: #ccc;
+            }
+            QCheckBox { color: #ccc; }
+        """)
+
+        self._presets: List[CameraPreset] = [CameraPreset.from_dict(c.to_dict()) for c in config.cameras]
+
+        layout = QVBoxLayout(self)
+
+        # ---- Add Network Camera (prominent) ----
+        network_btn = QPushButton("Add Network Camera")
+        network_btn.setStyleSheet(
+            "background-color: #2ecc71; font-size: 14px; padding: 12px; border-radius: 8px;"
+        )
+        network_btn.clicked.connect(self._open_network_camera_setup)
+        layout.addWidget(network_btn)
+
+        # Camera list
+        layout.addWidget(QLabel("Cameras:"))
+        self.camera_list = QListWidget()
+        self.camera_list.currentRowChanged.connect(self._on_selection_changed)
+        layout.addWidget(self.camera_list)
+
+        # Camera actions
+        btn_row = QHBoxLayout()
+        scan_usb_btn = QPushButton("Detect USB")
+        scan_usb_btn.clicked.connect(self._detect_usb)
+        btn_row.addWidget(scan_usb_btn)
+
+        remove_btn = QPushButton("Remove")
+        remove_btn.setStyleSheet("background-color: #e74c3c;")
+        remove_btn.clicked.connect(self._remove_camera)
+        btn_row.addWidget(remove_btn)
+        layout.addLayout(btn_row)
+
+        # Per-camera settings
+        settings_group = QGroupBox("Selected Camera Settings")
+        settings_group.setStyleSheet(
+            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
+            "border-radius: 8px; margin-top: 12px; padding-top: 12px; }"
+        )
+        sg_layout = QVBoxLayout(settings_group)
+
+        label_row = QHBoxLayout()
+        label_row.addWidget(QLabel("Label:"))
+        self.label_input = QLineEdit()
+        label_row.addWidget(self.label_input)
+        sg_layout.addLayout(label_row)
+
+        zoom_row = QHBoxLayout()
+        zoom_row.addWidget(QLabel("Zoom:"))
+        self.zoom_spin = QDoubleSpinBox()
+        self.zoom_spin.setRange(1.0, 4.0)
+        self.zoom_spin.setSingleStep(0.1)
+        self.zoom_spin.setValue(1.0)
+        zoom_row.addWidget(self.zoom_spin)
+        sg_layout.addLayout(zoom_row)
+
+        rot_row = QHBoxLayout()
+        rot_row.addWidget(QLabel("Rotation:"))
+        self.rotation_combo = QComboBox()
+        self.rotation_combo.addItems(["0", "90", "180", "270"])
+        rot_row.addWidget(self.rotation_combo)
+        sg_layout.addLayout(rot_row)
+
+        flip_row = QHBoxLayout()
+        self.flip_h_check = QCheckBox("Flip Horizontal")
+        self.flip_v_check = QCheckBox("Flip Vertical")
+        flip_row.addWidget(self.flip_h_check)
+        flip_row.addWidget(self.flip_v_check)
+        sg_layout.addLayout(flip_row)
+
+        layout.addWidget(settings_group)
+
+        # Primary camera
+        primary_row = QHBoxLayout()
+        primary_row.addWidget(QLabel("Primary camera:"))
+        self.primary_combo = QComboBox()
+        primary_row.addWidget(self.primary_combo)
+        layout.addLayout(primary_row)
+
+        # Dialog buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self._apply_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self._refresh_list()
+
+    def _open_network_camera_setup(self):
+        dlg = NetworkCameraDialog(self)
+        dlg.camera_added.connect(self._on_network_camera_added)
+        dlg.exec()
+
+    def _on_network_camera_added(self, url: str, desc: str):
+        existing_urls = {p.id for p in self._presets if p.type == "network"}
+        if url not in existing_urls:
+            self._presets.append(CameraPreset(id=url, type="network", label=desc))
+            self._refresh_list()
+
+    def _refresh_list(self):
+        self.camera_list.clear()
+        self.primary_combo.clear()
+        for p in self._presets:
+            label = p.label or f"Camera {p.id}"
+            type_str = "USB" if p.type == "usb" else "Network"
+            self.camera_list.addItem(f"[{type_str}] {label}")
+            self.primary_combo.addItem(f"{label}", p.id)
+
+    def _on_selection_changed(self, row: int):
+        if 0 <= row < len(self._presets):
+            p = self._presets[row]
+            self.label_input.setText(p.label)
+            self.zoom_spin.setValue(p.zoom)
+            rot_idx = {0: 0, 90: 1, 180: 2, 270: 3}.get(p.rotation, 0)
+            self.rotation_combo.setCurrentIndex(rot_idx)
+            self.flip_h_check.setChecked(p.flip_h)
+            self.flip_v_check.setChecked(p.flip_v)
+
+    def _apply_current_settings(self):
+        row = self.camera_list.currentRow()
+        if 0 <= row < len(self._presets):
+            p = self._presets[row]
+            p.label = self.label_input.text()
+            p.zoom = self.zoom_spin.value()
+            p.rotation = int(self.rotation_combo.currentText())
+            p.flip_h = self.flip_h_check.isChecked()
+            p.flip_v = self.flip_v_check.isChecked()
+
+    def _detect_usb(self):
+        existing_usb_ids = {p.id for p in self._presets if p.type == "usb"}
+        for i in range(10):
+            if i in existing_usb_ids:
+                continue
+            found = False
+            for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
+                cap = cv2.VideoCapture(i, backend)
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    cap.release()
+                    if ret:
+                        self._presets.append(CameraPreset(id=i, type="usb", label=f"USB Camera {i}"))
+                        found = True
+                        break
+                    cap.release()
+            # Already found, skip remaining backends
+        self._refresh_list()
+
+    def _remove_camera(self):
+        row = self.camera_list.currentRow()
+        if 0 <= row < len(self._presets):
+            self._presets.pop(row)
+            self._refresh_list()
+
+    def _apply_and_accept(self):
+        self._apply_current_settings()
+        self.accept()
+
+    def get_presets(self) -> List[CameraPreset]:
+        return self._presets
+
+    def get_primary_camera(self):
+        return self.primary_combo.currentData() if self.primary_combo.count() > 0 else 0
+
+
+# ============================================================================
+# Help Overlay
+# ============================================================================
+
+class KeyboardHelpOverlay(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard Shortcuts")
+        self.setMinimumWidth(350)
+        self.setStyleSheet("""
+            QDialog { background-color: #2d2d2d; }
+            QLabel { color: #ccc; font-size: 13px; }
+        """)
+        layout = QVBoxLayout(self)
+        shortcuts = [
+            ("Space", "Toggle play/pause"),
+            ("Left Arrow", "Step back one frame"),
+            ("Right Arrow", "Step forward one frame"),
+            ("A", "Toggle arm/disarm"),
+            ("T", "Manual trigger"),
+            ("[", "Decrease playback speed"),
+            ("]", "Increase playback speed"),
+            ("P", "Toggle PiP window"),
+            ("Delete", "Delete selected overlay shape"),
+            ("Escape", "Deselect / exit drawing mode"),
+            ("1", "Select tool"),
+            ("2", "Line tool"),
+            ("3", "Circle tool"),
+            ("?", "Show this help"),
+        ]
+        for key, desc in shortcuts:
+            row = QHBoxLayout()
+            key_label = QLabel(f"  {key}  ")
+            key_label.setStyleSheet(
+                "background-color: #444; border-radius: 4px; padding: 4px 8px; "
+                "font-family: Consolas; font-weight: bold; color: #fff;"
+            )
+            key_label.setFixedWidth(120)
+            row.addWidget(key_label)
+            row.addWidget(QLabel(desc))
+            row.addStretch()
+            layout.addLayout(row)
+
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet("background-color: #4a9eff; color: white; border: none; border-radius: 4px; padding: 8px;")
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+
+
+# ============================================================================
+# Main Application Window
+# ============================================================================
+
+class MainWindow(QMainWindow):
+    """Main application window."""
+
+    SPEED_OPTIONS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+
+    def __init__(self, log_handler: QTextEditLogHandler):
+        super().__init__()
+
+        self.config = AppConfig()
+        load_settings(self.config)
+
+        self.recording_manager = RecordingManager(self.config)
+
+        # State
+        self.camera_captures: Dict = {}
+        self.frame_buffers: Dict = {}
+        self.audio_detector: Optional[AudioDetector] = None
+        self.current_frames: Dict = {}
+
+        self.is_armed = False
+        self.is_recording = False
+        self.recording_start_time = 0
+        self.recorded_frames: Dict = {}
+        self.last_trigger_confidence = 0.0
+        self.last_trigger_timestamp: Optional[int] = None
+
+        self.playback_clip_index = -1
+        self.playback_frames: List[np.ndarray] = []
+        self.playback_position = 0
+        self.is_playing = False
+        self.playback_speed = self.config.playback_speed
+
+        # Multi-angle playback
+        self.playback_all_frames: Dict[str, List[np.ndarray]] = {}  # cam_id -> frames
+        self.playback_camera_labels: Dict[str, str] = {}  # cam_id -> label
+        self.playback_active_camera: Optional[str] = None  # current angle cam_id
+        self.playback_multi_view = False  # True = grid view of all cameras
+
+        self.pip_window: Optional[PiPWindow] = None
+        self.person_detector = PersonDetector()
+        self.person_detected = False
+
+        self.log_handler = log_handler
+
+        self._setup_ui()
+        self._setup_timers()
+        self._setup_shortcuts()
+        self._start_cameras()
+        self._load_existing_clips()
+
+        logger.info("Golf Swing Capture started (session: %s)", self.config.session_folder)
+
+    # ------------------------------------------------------------------
+    # UI Setup
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        self.setWindowTitle("Golf Swing Capture")
+        self.setMinimumSize(1200, 800)
+
+        if self.config.window_geometry:
+            g = self.config.window_geometry
+            self.setGeometry(g[0], g[1], g[2], g[3])
+
+        self.setStyleSheet("""
+            QMainWindow { background-color: #1e1e1e; }
+            QGroupBox {
+                color: #ccc; font-weight: bold;
+                border: 1px solid #444; border-radius: 8px;
+                margin-top: 12px; padding-top: 8px;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QLabel { color: #ccc; }
+            QPushButton {
+                background-color: #3d3d3d; color: #ccc;
+                border: 1px solid #555; border-radius: 6px;
+                padding: 8px 16px; font-size: 13px;
+            }
+            QPushButton:hover { background-color: #4d4d4d; border-color: #666; }
+            QPushButton:pressed { background-color: #2d2d2d; }
+            QPushButton:checked { background-color: #4a9eff; color: white; border-color: #4a9eff; }
+            QSlider::groove:horizontal { height: 6px; background-color: #444; border-radius: 3px; }
+            QSlider::handle:horizontal {
+                width: 16px; height: 16px; margin: -5px 0;
+                background-color: #4a9eff; border-radius: 8px;
+            }
+            QSlider::sub-page:horizontal { background-color: #4a9eff; border-radius: 3px; }
+            QTabWidget::pane { border: 1px solid #444; border-radius: 4px; }
+            QTabBar::tab {
+                background-color: #2d2d2d; color: #aaa; padding: 6px 14px;
+                border: 1px solid #444; border-bottom: none; border-radius: 4px 4px 0 0;
+            }
+            QTabBar::tab:selected { background-color: #3d3d3d; color: #fff; }
+            QComboBox {
+                background-color: #2d2d2d; color: #ccc;
+                border: 1px solid #444; border-radius: 4px; padding: 4px 8px;
+            }
+        """)
+
+        # Central widget
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+
+        # Left panel
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(6)
+
+        # Drawing toolbar
+        drawing_toolbar = QHBoxLayout()
+        self.select_tool_btn = QPushButton("Select")
+        self.select_tool_btn.setCheckable(True)
+        self.select_tool_btn.setChecked(True)
+        self.select_tool_btn.clicked.connect(lambda: self._set_drawing_mode("select"))
+
+        self.line_tool_btn = QPushButton("Line")
+        self.line_tool_btn.setCheckable(True)
+        self.line_tool_btn.clicked.connect(lambda: self._set_drawing_mode("line"))
+
+        self.circle_tool_btn = QPushButton("Circle")
+        self.circle_tool_btn.setCheckable(True)
+        self.circle_tool_btn.clicked.connect(lambda: self._set_drawing_mode("circle"))
+
+        self.clear_draw_btn = QPushButton("Clear All")
+        self.clear_draw_btn.clicked.connect(self._clear_drawings)
+
+        # Color palette buttons
+        self.color_btns = []
+        for color in DrawingOverlay.COLORS:
+            btn = QPushButton()
+            btn.setFixedSize(24, 24)
+            btn.setStyleSheet(f"background-color: {color}; border: 2px solid #555; border-radius: 12px;")
+            btn.clicked.connect(lambda checked, c=color: self._set_drawing_color(c))
+            self.color_btns.append(btn)
+
+        self._tool_buttons = [self.select_tool_btn, self.line_tool_btn, self.circle_tool_btn]
+        for btn in self._tool_buttons:
+            btn.setFixedHeight(30)
+            drawing_toolbar.addWidget(btn)
+        drawing_toolbar.addWidget(self.clear_draw_btn)
+        drawing_toolbar.addSpacing(10)
+        for btn in self.color_btns:
+            drawing_toolbar.addWidget(btn)
+        drawing_toolbar.addStretch()
+
+        left_layout.addLayout(drawing_toolbar)
+
+        # Video display with overlay stack
+        self.video_container = QWidget()
+        self.video_container.setMinimumSize(800, 450)
+        video_stack_layout = QVBoxLayout(self.video_container)
+        video_stack_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.video_player = VideoPlayer()
+        self.video_player.setMinimumSize(800, 450)
+        video_stack_layout.addWidget(self.video_player, stretch=1)
+
+        # Drawing overlay sits on top of the video player
+        self.drawing_overlay = DrawingOverlay(self.video_player)
+        self.drawing_overlay.shapes_changed.connect(self._on_shapes_changed)
+        self.drawing_overlay.load_shapes(self.config.drawing_overlays)
+
+        left_layout.addWidget(self.video_container, stretch=1)
+
+        # Playback controls
+        playback_group = QGroupBox("Playback")
+        playback_layout = QHBoxLayout(playback_group)
+
+        self.step_back_btn = QPushButton("|<")
+        self.step_back_btn.setFixedWidth(36)
+        self.step_back_btn.clicked.connect(self._step_back)
+        playback_layout.addWidget(self.step_back_btn)
+
+        self.play_btn = QPushButton("Play")
+        self.play_btn.setCheckable(True)
+        self.play_btn.clicked.connect(self._toggle_playback)
+        playback_layout.addWidget(self.play_btn)
+
+        self.step_fwd_btn = QPushButton(">|")
+        self.step_fwd_btn.setFixedWidth(36)
+        self.step_fwd_btn.clicked.connect(self._step_forward)
+        playback_layout.addWidget(self.step_fwd_btn)
+
+        self.playback_slider = QSlider(Qt.Orientation.Horizontal)
+        self.playback_slider.setMinimum(0)
+        self.playback_slider.setMaximum(100)
+        self.playback_slider.valueChanged.connect(self._on_slider_changed)
+        playback_layout.addWidget(self.playback_slider, stretch=1)
+
+        self.frame_label = QLabel("0 / 0")
+        self.frame_label.setFixedWidth(80)
+        playback_layout.addWidget(self.frame_label)
+
+        # Speed selector
+        playback_layout.addWidget(QLabel("Speed:"))
+        self.speed_combo = QComboBox()
+        for s in self.SPEED_OPTIONS:
+            self.speed_combo.addItem(f"{s}x", s)
+        default_idx = self.SPEED_OPTIONS.index(self.playback_speed) if self.playback_speed in self.SPEED_OPTIONS else 3
+        self.speed_combo.setCurrentIndex(default_idx)
+        self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
+        playback_layout.addWidget(self.speed_combo)
+
+        self.pip_btn = QPushButton("PiP")
+        self.pip_btn.clicked.connect(self._toggle_pip)
+        playback_layout.addWidget(self.pip_btn)
+
+        self.compare_btn = QPushButton("Compare")
+        self.compare_btn.clicked.connect(self._open_comparison)
+        playback_layout.addWidget(self.compare_btn)
+
+        left_layout.addWidget(playback_group)
+
+        # Angle selector bar (hidden by default, shown when multi-camera clip loaded)
+        self.angle_bar = QWidget()
+        self.angle_bar_layout = QHBoxLayout(self.angle_bar)
+        self.angle_bar_layout.setContentsMargins(4, 2, 4, 2)
+        self.angle_bar_layout.setSpacing(4)
+        self.angle_bar.setStyleSheet("background-color: #2d2d2d; border-radius: 4px;")
+        self.angle_buttons: List[QPushButton] = []
+        self.multi_view_btn: Optional[QPushButton] = None
+        self.angle_bar.setVisible(False)
+        left_layout.addWidget(self.angle_bar)
+
+        # Recording controls (simplified: Arm + Trigger + level meter)
+        record_group = QGroupBox("Recording")
+        record_layout = QHBoxLayout(record_group)
+
+        self.arm_btn = QPushButton("Arm")
+        self.arm_btn.setCheckable(True)
+        self.arm_btn.setStyleSheet("""
+            QPushButton:checked { background-color: #e74c3c; color: white; border-color: #e74c3c; }
+        """)
+        self.arm_btn.clicked.connect(self._toggle_armed)
+        record_layout.addWidget(self.arm_btn)
+
+        self.manual_trigger_btn = QPushButton("Manual Trigger")
+        self.manual_trigger_btn.clicked.connect(self._manual_trigger)
+        record_layout.addWidget(self.manual_trigger_btn)
+
+        record_layout.addStretch()
+
+        # Audio level meter (kept in recording bar)
+        self.audio_level = QProgressBar()
+        self.audio_level.setFixedWidth(80)
+        self.audio_level.setMaximum(100)
+        self.audio_level.setTextVisible(False)
+        self.audio_level.setStyleSheet("""
+            QProgressBar { background-color: #333; border: 1px solid #555; border-radius: 4px; }
+            QProgressBar::chunk { background-color: #4a9eff; border-radius: 3px; }
+        """)
+        record_layout.addWidget(self.audio_level)
+
+        left_layout.addWidget(record_group)
+
+        # Status
+        self.status_label = QLabel("Ready - Select cameras and arm to begin")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                color: #4a9eff; font-size: 14px; font-weight: bold;
+                padding: 8px; background-color: #2d2d2d; border-radius: 4px;
+            }
+        """)
+        left_layout.addWidget(self.status_label)
+
+        main_layout.addWidget(left_panel, stretch=2)
+
+        # Right panel - Tabbed
+        right_panel = QWidget()
+        right_panel.setFixedWidth(400)
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(6)
+
+        self.right_tabs = QTabWidget()
+
+        # Tab 1: Shots (simplified - just the gallery)
+        shots_tab = QWidget()
+        shots_layout = QVBoxLayout(shots_tab)
+
+        self.gallery = ClipGallery()
+        self.gallery.clip_selected.connect(self._on_clip_selected)
+        self.gallery.clip_deleted.connect(self._on_clip_delete_requested)
+        self.gallery.clip_mark_not_shot.connect(self._on_mark_not_shot_requested)
+        shots_layout.addWidget(self.gallery, stretch=1)
+
+        self.right_tabs.addTab(shots_tab, "Shots")
+
+        # Tab 2: Detection
+        detection_tab = QWidget()
+        det_layout = QVBoxLayout(detection_tab)
+
+        self.auto_ready_check = QCheckBox("Auto-Ready (Person Detection)")
+        self.auto_ready_check.setChecked(self.config.auto_ready_enabled)
+        self.auto_ready_check.setStyleSheet("color: #ccc;")
+        self.auto_ready_check.toggled.connect(self._on_auto_ready_toggled)
+        det_layout.addWidget(self.auto_ready_check)
+
+        self.person_status_label = QLabel("Person: Not detected")
+        self.person_status_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        det_layout.addWidget(self.person_status_label)
+
+        det_layout.addWidget(QLabel("Audio Classifier:"))
+        self.classifier_mode_label = QLabel("Mode: heuristic")
+        self.classifier_mode_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        det_layout.addWidget(self.classifier_mode_label)
+
+        self.training_count_label = QLabel("Training samples: 0")
+        self.training_count_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        det_layout.addWidget(self.training_count_label)
+
+        self.last_confidence_label = QLabel("Last trigger confidence: --")
+        self.last_confidence_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        det_layout.addWidget(self.last_confidence_label)
+
+        self.retrain_btn = QPushButton("Retrain Classifier")
+        self.retrain_btn.clicked.connect(self._retrain_classifier)
+        det_layout.addWidget(self.retrain_btn)
+
+        det_layout.addStretch()
+        self.right_tabs.addTab(detection_tab, "Detection")
+
+        # Tab 3: Settings
+        settings_tab = QWidget()
+        settings_layout = QVBoxLayout(settings_tab)
+
+        # Audio Settings group
+        audio_group = QGroupBox("Audio Settings")
+        audio_group.setStyleSheet(
+            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
+            "border-radius: 8px; margin-top: 12px; padding-top: 12px; }"
+        )
+        audio_group_layout = QVBoxLayout(audio_group)
+
+        audio_dev_row = QHBoxLayout()
+        audio_dev_row.addWidget(QLabel("Audio Device:"))
+        self.audio_device_combo = QComboBox()
+        self.audio_device_combo.addItem("Default", None)
+        for dev in enumerate_audio_devices():
+            name = dev["name"][:30]
+            self.audio_device_combo.addItem(name, dev["index"])
+        if self.config.audio_device_index is not None:
+            for i in range(self.audio_device_combo.count()):
+                if self.audio_device_combo.itemData(i) == self.config.audio_device_index:
+                    self.audio_device_combo.setCurrentIndex(i)
+                    break
+        self.audio_device_combo.currentIndexChanged.connect(self._on_audio_device_changed)
+        audio_dev_row.addWidget(self.audio_device_combo, stretch=1)
+        audio_group_layout.addLayout(audio_dev_row)
+
+        thr_row = QHBoxLayout()
+        thr_row.addWidget(QLabel("Threshold:"))
+        self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.threshold_slider.setMinimum(1)
+        self.threshold_slider.setMaximum(100)
+        self.threshold_slider.setValue(int(self.config.audio_threshold * 100))
+        self.threshold_slider.valueChanged.connect(self._on_threshold_changed)
+        thr_row.addWidget(self.threshold_slider, stretch=1)
+        self.threshold_label = QLabel(f"{int(self.config.audio_threshold * 100)}%")
+        self.threshold_label.setFixedWidth(35)
+        thr_row.addWidget(self.threshold_label)
+        audio_group_layout.addLayout(thr_row)
+
+        conf_row = QHBoxLayout()
+        conf_row.addWidget(QLabel("Confidence:"))
+        self.confidence_bar = QProgressBar()
+        self.confidence_bar.setMaximum(100)
+        self.confidence_bar.setTextVisible(True)
+        self.confidence_bar.setStyleSheet("""
+            QProgressBar { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #ccc; font-size: 10px; }
+            QProgressBar::chunk { background-color: #2ecc71; border-radius: 3px; }
+        """)
+        conf_row.addWidget(self.confidence_bar, stretch=1)
+        audio_group_layout.addLayout(conf_row)
+
+        settings_layout.addWidget(audio_group)
+
+        # Camera Settings group
+        camera_group = QGroupBox("Camera Settings")
+        camera_group.setStyleSheet(
+            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
+            "border-radius: 8px; margin-top: 12px; padding-top: 12px; }"
+        )
+        camera_group_layout = QVBoxLayout(camera_group)
+
+        self.camera_btn = QPushButton("Configure Cameras")
+        self.camera_btn.clicked.connect(self._show_camera_settings)
+        camera_group_layout.addWidget(self.camera_btn)
+
+        self.camera_status = QLabel("Starting...")
+        self.camera_status.setStyleSheet("color: #4a9eff;")
+        camera_group_layout.addWidget(self.camera_status)
+
+        settings_layout.addWidget(camera_group)
+
+        # Session group
+        session_group = QGroupBox("Session")
+        session_group.setStyleSheet(
+            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
+            "border-radius: 8px; margin-top: 12px; padding-top: 12px; }"
+        )
+        session_group_layout = QVBoxLayout(session_group)
+
+        self.open_folder_btn = QPushButton("Open Folder")
+        self.open_folder_btn.clicked.connect(self._open_session_folder)
+        session_group_layout.addWidget(self.open_folder_btn)
+
+        self.new_session_btn = QPushButton("New Session")
+        self.new_session_btn.clicked.connect(self._new_session)
+        session_group_layout.addWidget(self.new_session_btn)
+
+        settings_layout.addWidget(session_group)
+
+        settings_layout.addStretch()
+        self.right_tabs.addTab(settings_tab, "Settings")
+
+        # Tab 4: Log
+        self.log_panel = LogPanel()
+        self.log_handler.signal.connect(self.log_panel.append_log)
+        self.right_tabs.addTab(self.log_panel, "Log")
+
+        right_layout.addWidget(self.right_tabs, stretch=1)
+        main_layout.addWidget(right_panel)
+
+        # Status bar
+        self.statusBar().setStyleSheet("color: #888;")
+        self.statusBar().showMessage(f"Session: {self.config.session_folder}")
+
+    # ------------------------------------------------------------------
+    # Timers
+    # ------------------------------------------------------------------
+
+    def _setup_timers(self):
+        self.display_timer = QTimer()
+        self.display_timer.timeout.connect(self._update_display)
+        self.display_timer.start(33)
+
+        self.recording_timer = QTimer()
+        self.recording_timer.timeout.connect(self._check_recording)
+        self.recording_timer.start(100)
+
+        self.playback_timer = QTimer()
+        self.playback_timer.timeout.connect(self._playback_tick)
+
+    # ------------------------------------------------------------------
+    # Keyboard Shortcuts
+    # ------------------------------------------------------------------
+
+    def _setup_shortcuts(self):
+        shortcuts = {
+            "Space": self._toggle_playback_shortcut,
+            "Left": self._step_back,
+            "Right": self._step_forward,
+            "A": self._shortcut_toggle_armed,
+            "T": self._manual_trigger,
+            "[": self._decrease_speed,
+            "]": self._increase_speed,
+            "P": self._toggle_pip,
+            "Delete": self._delete_selected_shape,
+            "Escape": self._deselect_drawing,
+            "1": lambda: self._set_drawing_mode("select"),
+            "2": lambda: self._set_drawing_mode("line"),
+            "3": lambda: self._set_drawing_mode("circle"),
+            "?": self._show_help,
+        }
+        for key, callback in shortcuts.items():
+            sc = QShortcut(QKeySequence(key), self)
+            sc.activated.connect(callback)
+
+    def _toggle_playback_shortcut(self):
+        self.play_btn.setChecked(not self.play_btn.isChecked())
+        self._toggle_playback()
+
+    def _shortcut_toggle_armed(self):
+        self.arm_btn.setChecked(not self.arm_btn.isChecked())
+        self._toggle_armed()
+
+    def _decrease_speed(self):
+        idx = self.speed_combo.currentIndex()
+        if idx > 0:
+            self.speed_combo.setCurrentIndex(idx - 1)
+
+    def _increase_speed(self):
+        idx = self.speed_combo.currentIndex()
+        if idx < self.speed_combo.count() - 1:
+            self.speed_combo.setCurrentIndex(idx + 1)
+
+    def _show_help(self):
+        dlg = KeyboardHelpOverlay(self)
+        dlg.exec()
+
+    # ------------------------------------------------------------------
+    # Camera Management
+    # ------------------------------------------------------------------
+
+    def _start_cameras(self):
+        """Start cameras from config (or default)."""
+        if not self.config.cameras:
+            self.config.cameras = [CameraPreset(id=0, type="usb", label="Default")]
+            self.config.primary_camera = 0
+
+        for preset in self.config.cameras:
+            self._start_camera(preset)
+
+        self._update_camera_status()
+
+    def _start_camera(self, preset: CameraPreset):
+        cam_id = preset.id
+        if cam_id in self.camera_captures:
+            return
+
+        capture = CameraCapture(cam_id, self.config.fps, preset)
+        capture.frame_ready.connect(self._on_frame_ready)
+        capture.start()
+        self.camera_captures[cam_id] = capture
+
+        self.frame_buffers[cam_id] = FrameBuffer(
+            self.config.pre_trigger_seconds, self.config.fps
+        )
+        logger.info("Started camera: %s (%s)", preset.label or cam_id, preset.type)
+
+    def _stop_camera(self, cam_id):
+        if cam_id in self.camera_captures:
+            self.camera_captures[cam_id].stop()
+            del self.camera_captures[cam_id]
+            if cam_id in self.frame_buffers:
+                del self.frame_buffers[cam_id]
+
+    def _update_camera_status(self):
+        parts = []
+        for p in self.config.cameras:
+            label = p.label or str(p.id)
+            parts.append(label)
+        primary = self.config.primary_camera
+        self.camera_status.setText(f"Active: {', '.join(parts)} | Primary: {primary}")
+
+    # ------------------------------------------------------------------
+    # Audio Management
+    # ------------------------------------------------------------------
+
+    def _start_audio(self):
+        if not AUDIO_AVAILABLE:
+            return
+
+        if self.audio_detector is None:
+            self.audio_detector = AudioDetector(self.config)
+            self.audio_detector.trigger_detected.connect(self._on_audio_trigger)
+            self.audio_detector.level_update.connect(self._on_audio_level)
+
+        dev_idx = self.audio_device_combo.currentData()
+        self.audio_detector.set_device_index(dev_idx)
+
+        if not self.audio_detector.isRunning():
+            self.audio_detector.start()
+
+    def _stop_audio(self):
+        if self.audio_detector:
+            self.audio_detector.stop()
+            self.audio_detector = None
+
+    def _on_audio_device_changed(self, idx):
+        dev_idx = self.audio_device_combo.currentData()
+        self.config.audio_device_index = dev_idx
+        save_settings(self.config)
+        # Restart audio if armed
+        if self.is_armed:
+            self._stop_audio()
+            self._start_audio()
+
+    # ------------------------------------------------------------------
+    # Frame Handling
+    # ------------------------------------------------------------------
+
+    def _on_frame_ready(self, camera_id, frame: np.ndarray, timestamp: float):
+        self.current_frames[camera_id] = frame
+
+        if self.is_armed and camera_id in self.frame_buffers:
+            self.frame_buffers[camera_id].add_frame(frame, timestamp)
+
+        if self.is_recording:
+            if camera_id not in self.recorded_frames:
+                self.recorded_frames[camera_id] = []
+            self.recorded_frames[camera_id].append((frame.copy(), timestamp))
+
+        # Person detection on primary camera
+        if camera_id == self.config.primary_camera and self.config.auto_ready_enabled:
+            state_change = self.person_detector.check(frame)
+            if state_change is not None:
+                self._on_person_state_changed(state_change)
+
+    def _on_person_state_changed(self, present: bool):
+        self.person_detected = present
+        if present:
+            self.person_status_label.setText("Person: DETECTED")
+            self.person_status_label.setStyleSheet("color: #2ecc71; font-size: 12px; padding: 4px;")
+            logger.info("Person detected - auto-arming")
+            if not self.is_armed:
+                self.arm_btn.setChecked(True)
+                self._toggle_armed()
+        else:
+            self.person_status_label.setText("Person: Not detected")
+            self.person_status_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+            logger.info("Person left - auto-disarming")
+            if self.is_armed and not self.is_recording:
+                self.arm_btn.setChecked(False)
+                self._toggle_armed()
+
+    # ------------------------------------------------------------------
+    # Audio Trigger Handling
+    # ------------------------------------------------------------------
+
+    def _on_audio_trigger(self, confidence: float, features: dict):
+        self.last_trigger_confidence = confidence
+        self.last_trigger_timestamp = int(time.time() * 1000)
+        self.confidence_bar.setValue(int(confidence * 100))
+        self.last_confidence_label.setText(f"Last trigger confidence: {confidence:.0%}")
+
+        if self.is_armed and not self.is_recording:
+            logger.info("Trigger! confidence=%.2f", confidence)
+            self._start_recording()
+
+    def _on_audio_level(self, level: float):
+        self.audio_level.setValue(int(level * 100))
+
+    # ------------------------------------------------------------------
+    # Recording
+    # ------------------------------------------------------------------
+
+    def _start_recording(self):
+        if self.is_recording:
+            return
+
+        self.is_recording = True
+        self.recording_start_time = time.time()
+        self.recorded_frames = {}
+
+        for cam_id, buffer in self.frame_buffers.items():
+            self.recorded_frames[cam_id] = buffer.get_frames()
+
+        self.status_label.setText("RECORDING...")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                color: #e74c3c; font-size: 14px; font-weight: bold;
+                padding: 8px; background-color: #2d2d2d; border-radius: 4px;
+            }
+        """)
+        logger.info("Recording started")
+
+    def _check_recording(self):
+        if self.is_recording:
+            elapsed = time.time() - self.recording_start_time
+            if elapsed >= self.config.post_trigger_seconds:
+                self._stop_recording()
+
+    def _stop_recording(self):
+        self.is_recording = False
+
+        # Build camera labels from config
+        camera_labels = {}
+        for preset in self.config.cameras:
+            camera_labels[str(preset.id)] = preset.label or str(preset.id)
+
+        # Attach trigger timestamp for training data association
+        clip_info = self.recording_manager.save_clip(
+            self.recorded_frames, self.config.primary_camera, camera_labels
+        )
+
+        if clip_info:
+            if self.last_trigger_timestamp:
+                clip_info["trigger_timestamp"] = self.last_trigger_timestamp
+                self.recording_manager._save_clips_metadata()
+
+            thumb_file = clip_info.get("thumbnail")
+            thumb_path = Path(self.recording_manager.session_folder) / thumb_file if thumb_file else None
+            self.gallery.add_clip(clip_info, thumb_path)
+
+            visible = self.recording_manager.get_visible_clips()
+            self._load_clip_for_playback(len(visible) - 1)
+
+        self.status_label.setText("Shot captured! Waiting for next shot...")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                color: #2ecc71; font-size: 14px; font-weight: bold;
+                padding: 8px; background-color: #2d2d2d; border-radius: 4px;
+            }
+        """)
+
+        for buffer in self.frame_buffers.values():
+            buffer.clear()
+
+        logger.info("Recording stopped, clip saved")
+
+    # ------------------------------------------------------------------
+    # Display
+    # ------------------------------------------------------------------
+
+    def _update_display(self):
+        if self.is_playing and self.playback_frames:
+            frame = self._get_playback_frame()
+            self.video_player.display_frame(frame)
+
+            if self.pip_window and self.pip_window.isVisible():
+                self.pip_window.display_frame(frame)
+
+        elif self.config.primary_camera in self.current_frames:
+            if not self.is_playing:
+                frame = self.current_frames[self.config.primary_camera]
+
+                if self.is_recording:
+                    frame = frame.copy()
+                    cv2.circle(frame, (50, 50), 20, (0, 0, 255), -1)
+                    cv2.putText(frame, "REC", (80, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                elif self.is_armed:
+                    frame = frame.copy()
+                    cv2.circle(frame, (50, 50), 20, (0, 255, 255), -1)
+                    cv2.putText(frame, "ARMED", (80, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+                self.video_player.display_frame(frame)
+
+        # Keep drawing overlay sized to video player
+        self.drawing_overlay.setGeometry(self.video_player.geometry())
+        vr = self.video_player.video_rect
+        self.drawing_overlay.set_video_rect(*vr)
+
+    # ------------------------------------------------------------------
+    # Playback
+    # ------------------------------------------------------------------
+
+    def _playback_tick(self):
+        if self.playback_multi_view:
+            max_frames = max((len(f) for f in self.playback_all_frames.values()), default=0)
+            if max_frames == 0:
+                return
+            self.playback_position = (self.playback_position + 1) % max_frames
+            self.playback_slider.blockSignals(True)
+            self.playback_slider.setValue(self.playback_position)
+            self.playback_slider.blockSignals(False)
+            self.frame_label.setText(f"{self.playback_position + 1} / {max_frames}")
+        else:
+            if not self.playback_frames:
+                return
+            self.playback_position = (self.playback_position + 1) % len(self.playback_frames)
+            self.playback_slider.blockSignals(True)
+            self.playback_slider.setValue(self.playback_position)
+            self.playback_slider.blockSignals(False)
+            self.frame_label.setText(f"{self.playback_position + 1} / {len(self.playback_frames)}")
+
+    def _toggle_playback(self):
+        has_frames = self.playback_frames or (self.playback_multi_view and self.playback_all_frames)
+        if self.play_btn.isChecked():
+            if has_frames:
+                self.is_playing = True
+                interval = max(8, int(33 / self.playback_speed))
+                self.playback_timer.start(interval)
+                self.play_btn.setText("Pause")
+        else:
+            self.is_playing = False
+            self.playback_timer.stop()
+            self.play_btn.setText("Play")
+
+    def _on_slider_changed(self, value: int):
+        self.playback_position = value
+        frame = self._get_playback_frame()
+        if frame is not None:
+            self.video_player.display_frame(frame)
+            if self.playback_multi_view:
+                max_frames = max((len(f) for f in self.playback_all_frames.values()), default=0)
+                self.frame_label.setText(f"{value + 1} / {max_frames}")
+            else:
+                self.frame_label.setText(f"{value + 1} / {len(self.playback_frames)}")
+            if self.pip_window and self.pip_window.isVisible():
+                self.pip_window.display_frame(frame)
+
+    def _on_speed_changed(self, index: int):
+        self.playback_speed = self.speed_combo.currentData() or 1.0
+        self.config.playback_speed = self.playback_speed
+        save_settings(self.config)
+        if self.is_playing:
+            interval = max(8, int(33 / self.playback_speed))
+            self.playback_timer.setInterval(interval)
+
+    def _step_back(self):
+        if not self.playback_frames:
+            return
+        if self.is_playing:
+            self.play_btn.setChecked(False)
+            self._toggle_playback()
+        self.playback_position = max(0, self.playback_position - 1)
+        self.playback_slider.setValue(self.playback_position)
+        self._show_current_frame()
+
+    def _step_forward(self):
+        if not self.playback_frames:
+            return
+        if self.is_playing:
+            self.play_btn.setChecked(False)
+            self._toggle_playback()
+        self.playback_position = min(len(self.playback_frames) - 1, self.playback_position + 1)
+        self.playback_slider.setValue(self.playback_position)
+        self._show_current_frame()
+
+    def _get_playback_frame(self) -> Optional[np.ndarray]:
+        """Get the current playback frame, handling multi-view grid."""
+        if self.playback_multi_view and len(self.playback_all_frames) > 1:
+            # Composite grid of all cameras
+            current_frames = {}
+            for cam_id, frames in self.playback_all_frames.items():
+                idx = min(self.playback_position, len(frames) - 1)
+                if idx >= 0:
+                    current_frames[cam_id] = frames[idx]
+            if current_frames:
+                return composite_grid(current_frames, self.playback_camera_labels)
+            return None
+        elif self.playback_frames and 0 <= self.playback_position < len(self.playback_frames):
+            return self.playback_frames[self.playback_position]
+        return None
+
+    def _show_current_frame(self):
+        frame = self._get_playback_frame()
+        if frame is not None:
+            self.video_player.display_frame(frame)
+            if self.playback_multi_view:
+                max_frames = max((len(f) for f in self.playback_all_frames.values()), default=0)
+                self.frame_label.setText(f"{self.playback_position + 1} / {max_frames}")
+            else:
+                self.frame_label.setText(f"{self.playback_position + 1} / {len(self.playback_frames)}")
+            if self.pip_window and self.pip_window.isVisible():
+                self.pip_window.display_frame(frame)
+
+    def _load_clip_for_playback(self, index: int):
+        visible = self.recording_manager.get_visible_clips()
+        if index < 0 or index >= len(visible):
+            return
+        clip = visible[index]
+
+        clip_path = self.recording_manager.get_clip_path(index)
+        if not clip_path or not clip_path.exists():
+            return
+
+        self.is_playing = False
+        self.playback_timer.stop()
+        self.play_btn.setChecked(False)
+        self.play_btn.setText("Play")
+
+        # Load all camera angles
+        self.playback_all_frames.clear()
+        self.playback_camera_labels = clip.get("camera_labels", {})
+        self.playback_multi_view = False
+
+        camera_files = clip.get("camera_files", {})
+        primary_cam_id = None
+
+        if camera_files:
+            for cam_id, filename in camera_files.items():
+                path = Path(self.recording_manager.session_folder) / filename
+                if not path.exists():
+                    continue
+                frames = []
+                cap = cv2.VideoCapture(str(path))
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    frames.append(frame)
+                cap.release()
+                if frames:
+                    self.playback_all_frames[cam_id] = frames
+
+                # Identify the primary camera id (the one whose filename matches clip["file"])
+                if filename == clip["file"]:
+                    primary_cam_id = cam_id
+        else:
+            # Single camera clip - load from primary file
+            frames = []
+            cap = cv2.VideoCapture(str(clip_path))
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(frame)
+            cap.release()
+            if frames:
+                self.playback_all_frames["primary"] = frames
+                primary_cam_id = "primary"
+
+        # Set active camera to primary
+        self.playback_active_camera = primary_cam_id or (list(self.playback_all_frames.keys())[0] if self.playback_all_frames else None)
+
+        # Set playback_frames to active camera for compatibility
+        if self.playback_active_camera and self.playback_active_camera in self.playback_all_frames:
+            self.playback_frames = self.playback_all_frames[self.playback_active_camera]
+        else:
+            self.playback_frames = []
+
+        # Build angle buttons
+        self._build_angle_buttons(clip)
+
+        if self.playback_frames:
+            self.playback_position = 0
+            self.playback_slider.setMaximum(len(self.playback_frames) - 1)
+            self.playback_slider.setValue(0)
+            self.frame_label.setText(f"1 / {len(self.playback_frames)}")
+            self.playback_clip_index = index
+
+            self.play_btn.setChecked(True)
+            self._toggle_playback()
+
+    # ------------------------------------------------------------------
+    # Multi-Angle Playback
+    # ------------------------------------------------------------------
+
+    def _build_angle_buttons(self, clip_info: dict):
+        """Create angle selector buttons from clip metadata."""
+        # Clear existing buttons
+        for btn in self.angle_buttons:
+            self.angle_bar_layout.removeWidget(btn)
+            btn.deleteLater()
+        self.angle_buttons.clear()
+        if self.multi_view_btn:
+            self.angle_bar_layout.removeWidget(self.multi_view_btn)
+            self.multi_view_btn.deleteLater()
+            self.multi_view_btn = None
+
+        # Hide if only one camera
+        if len(self.playback_all_frames) <= 1:
+            self.angle_bar.setVisible(False)
+            return
+
+        self.angle_bar.setVisible(True)
+
+        btn_style = """
+            QPushButton {
+                background-color: #3d3d3d; color: #ccc;
+                border: 1px solid #555; border-radius: 4px; padding: 4px 12px; font-size: 12px;
+            }
+            QPushButton:hover { background-color: #4d4d4d; }
+            QPushButton:checked { background-color: #4a9eff; color: white; border-color: #4a9eff; }
+        """
+
+        labels = clip_info.get("camera_labels", {})
+        for cam_id in self.playback_all_frames:
+            label = labels.get(cam_id, f"Camera {cam_id}")
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(btn_style)
+            btn.clicked.connect(lambda checked, cid=cam_id: self._on_angle_selected(cid))
+            self.angle_bar_layout.addWidget(btn)
+            self.angle_buttons.append(btn)
+
+        # Check the active camera button
+        cam_ids = list(self.playback_all_frames.keys())
+        if self.playback_active_camera in cam_ids:
+            idx = cam_ids.index(self.playback_active_camera)
+            self.angle_buttons[idx].setChecked(True)
+
+        # Multi-view button
+        self.multi_view_btn = QPushButton("Multi")
+        self.multi_view_btn.setCheckable(True)
+        self.multi_view_btn.setStyleSheet(btn_style)
+        self.multi_view_btn.clicked.connect(self._toggle_multi_view)
+        self.angle_bar_layout.addWidget(self.multi_view_btn)
+
+        self.angle_bar_layout.addStretch()
+
+    def _on_angle_selected(self, cam_id: str):
+        """Switch active camera angle."""
+        self.playback_multi_view = False
+        if self.multi_view_btn:
+            self.multi_view_btn.setChecked(False)
+
+        self.playback_active_camera = cam_id
+
+        # Update button checked states
+        cam_ids = list(self.playback_all_frames.keys())
+        for i, btn in enumerate(self.angle_buttons):
+            btn.setChecked(cam_ids[i] == cam_id)
+
+        # Swap playback frames
+        if cam_id in self.playback_all_frames:
+            self.playback_frames = self.playback_all_frames[cam_id]
+            self.playback_slider.setMaximum(max(0, len(self.playback_frames) - 1))
+            self.playback_position = min(self.playback_position, len(self.playback_frames) - 1)
+            self._show_current_frame()
+
+    def _toggle_multi_view(self):
+        """Toggle grid view showing all angles."""
+        self.playback_multi_view = self.multi_view_btn.isChecked() if self.multi_view_btn else False
+
+        # Uncheck individual angle buttons when multi is active
+        if self.playback_multi_view:
+            for btn in self.angle_buttons:
+                btn.setChecked(False)
+
+            # Use the longest camera's frame count for slider
+            max_frames = max((len(f) for f in self.playback_all_frames.values()), default=0)
+            if max_frames > 0:
+                self.playback_slider.setMaximum(max_frames - 1)
+                self.playback_position = min(self.playback_position, max_frames - 1)
+                self._show_current_frame()
+        else:
+            # Re-select active camera
+            if self.playback_active_camera:
+                self._on_angle_selected(self.playback_active_camera)
+
+    # ------------------------------------------------------------------
+    # PiP
+    # ------------------------------------------------------------------
+
+    def _toggle_pip(self):
+        if self.pip_window is None:
+            self.pip_window = PiPWindow()
+            self.pip_window.closed.connect(self._on_pip_closed)
+
+        if self.pip_window.isVisible():
+            self.pip_window.hide()
+        else:
+            self.pip_window.show()
+
+    def _on_pip_closed(self):
+        pass
+
+    # ------------------------------------------------------------------
+    # Comparison
+    # ------------------------------------------------------------------
+
+    def _open_comparison(self):
+        visible = self.recording_manager.get_visible_clips()
+        if len(visible) < 1:
+            QMessageBox.information(self, "Compare", "Need at least one clip to compare.")
+            return
+        dlg = ComparisonWindow(
+            visible,
+            Path(self.recording_manager.session_folder),
+            self,
+        )
+        dlg.exec()
+
+    # ------------------------------------------------------------------
+    # Armed / Trigger
+    # ------------------------------------------------------------------
+
+    def _toggle_armed(self):
+        self.is_armed = self.arm_btn.isChecked()
+
+        if self.is_armed:
+            self._start_audio()
+            self.arm_btn.setText("Armed")
+            self.status_label.setText("Armed - Waiting for shot...")
+            self.status_label.setStyleSheet("""
+                QLabel {
+                    color: #f1c40f; font-size: 14px; font-weight: bold;
+                    padding: 8px; background-color: #2d2d2d; border-radius: 4px;
+                }
+            """)
+            logger.info("System armed")
+        else:
+            self._stop_audio()
+            self.arm_btn.setText("Arm")
+            self.status_label.setText("Ready - Arm to begin capturing")
+            self.status_label.setStyleSheet("""
+                QLabel {
+                    color: #4a9eff; font-size: 14px; font-weight: bold;
+                    padding: 8px; background-color: #2d2d2d; border-radius: 4px;
+                }
+            """)
+            logger.info("System disarmed")
+
+    def _manual_trigger(self):
+        if self.is_armed and not self.is_recording:
+            self.last_trigger_timestamp = int(time.time() * 1000)
+            self._start_recording()
+        elif not self.is_armed:
+            QMessageBox.information(self, "Not Armed", "Please arm the system first before triggering.")
+
+    def _on_threshold_changed(self, value: int):
+        threshold = value / 100.0
+        self.config.audio_threshold = threshold
+        self.threshold_label.setText(f"{value}%")
+
+        if self.audio_detector:
+            self.audio_detector.set_threshold(threshold)
+        save_settings(self.config)
+
+    # ------------------------------------------------------------------
+    # Drawing Tools
+    # ------------------------------------------------------------------
+
+    def _set_drawing_mode(self, mode: str):
+        for btn in self._tool_buttons:
+            btn.setChecked(False)
+        if mode == "select":
+            self.select_tool_btn.setChecked(True)
+        elif mode == "line":
+            self.line_tool_btn.setChecked(True)
+        elif mode == "circle":
+            self.circle_tool_btn.setChecked(True)
+        self.drawing_overlay.set_mode(mode)
+
+    def _set_drawing_color(self, color: str):
+        self.drawing_overlay.current_color = color
+        self.drawing_overlay.change_selected_color(color)
+
+    def _clear_drawings(self):
+        self.drawing_overlay.clear_all()
+        self.config.drawing_overlays = []
+        save_settings(self.config)
+
+    def _delete_selected_shape(self):
+        self.drawing_overlay.delete_selected()
+
+    def _deselect_drawing(self):
+        self._set_drawing_mode("select")
+        self.drawing_overlay._deselect_all()
+        self.drawing_overlay.update()
+
+    def _on_shapes_changed(self):
+        self.config.drawing_overlays = self.drawing_overlay.save_shapes()
+        save_settings(self.config)
+
+    # ------------------------------------------------------------------
+    # Gallery
+    # ------------------------------------------------------------------
+
+    def _load_existing_clips(self):
+        visible = self.recording_manager.get_visible_clips()
+        self.gallery.refresh(visible, Path(self.recording_manager.session_folder))
+
+    def _on_clip_selected(self, index: int):
+        self._load_clip_for_playback(index)
+
+    def _on_clip_delete_requested(self, index: int):
+        reply = QMessageBox.question(
+            self, "Delete Shot",
+            "Are you sure you want to delete this shot?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            real_idx = self.recording_manager.get_real_index(index)
+            if self.recording_manager.delete_clip(real_idx):
+                self._refresh_gallery()
+                if self.playback_clip_index == index:
+                    self._clear_playback()
+
+    def _on_mark_not_shot_requested(self, index: int):
+        reply = QMessageBox.question(
+            self, "Mark as Not a Shot",
+            "This will delete the video but keep the audio data for training "
+            "the audio classifier. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            real_idx = self.recording_manager.get_real_index(index)
+            if self.recording_manager.mark_as_not_shot(real_idx):
+                self._refresh_gallery()
+                if self.playback_clip_index == index:
+                    self._clear_playback()
+                # Auto-retrain
+                self._retrain_classifier()
+                logger.info("Clip marked as not a shot, classifier retrain triggered")
+
+    def _refresh_gallery(self):
+        visible = self.recording_manager.get_visible_clips()
+        self.gallery.refresh(visible, Path(self.recording_manager.session_folder))
+
+    def _clear_playback(self):
+        self.playback_frames = []
+        self.playback_all_frames.clear()
+        self.playback_camera_labels.clear()
+        self.playback_active_camera = None
+        self.playback_multi_view = False
+        self.playback_clip_index = -1
+        self.is_playing = False
+        self.playback_timer.stop()
+        self.play_btn.setChecked(False)
+        self.play_btn.setText("Play")
+        self.angle_bar.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Detection Tab
+    # ------------------------------------------------------------------
+
+    def _on_auto_ready_toggled(self, checked: bool):
+        self.config.auto_ready_enabled = checked
+        save_settings(self.config)
+        logger.info("Auto-ready (person detection): %s", "enabled" if checked else "disabled")
+
+    def _retrain_classifier(self):
+        if self.audio_detector:
+            success = self.audio_detector.classifier.retrain()
+            if success:
+                self.classifier_mode_label.setText(f"Mode: learned")
+            else:
+                self.classifier_mode_label.setText(f"Mode: heuristic (need more samples)")
+        else:
+            classifier = AudioClassifier()
+            success = classifier.retrain()
+            if success:
+                self.classifier_mode_label.setText(f"Mode: learned")
+
+        count = AudioClassifier().training_sample_count
+        self.training_count_label.setText(f"Training samples: {count}")
+
+    # ------------------------------------------------------------------
+    # Camera Settings Dialog
+    # ------------------------------------------------------------------
+
+    def _show_camera_settings(self):
+        dialog = CameraSettingsDialog(self.config, self)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_presets = dialog.get_presets()
+            primary = dialog.get_primary_camera()
+
+            new_ids = {p.id for p in new_presets}
+            old_ids = set(self.camera_captures.keys())
+
+            # Stop removed cameras
+            for cam_id in old_ids - new_ids:
+                self._stop_camera(cam_id)
+
+            # Update or add cameras
+            for preset in new_presets:
+                if preset.id in self.camera_captures:
+                    # Update transforms on running camera
+                    cap = self.camera_captures[preset.id]
+                    cap.set_zoom(preset.zoom)
+                    cap.set_rotation(preset.rotation)
+                    cap.set_flip_h(preset.flip_h)
+                    cap.set_flip_v(preset.flip_v)
+                else:
+                    self._start_camera(preset)
+
+            self.config.cameras = new_presets
+            self.config.primary_camera = primary
+            save_settings(self.config)
+            self._update_camera_status()
+
+    # ------------------------------------------------------------------
+    # Session Management
+    # ------------------------------------------------------------------
+
+    def _open_session_folder(self):
+        import subprocess
+        path = self.recording_manager.session_folder
+        if os.name == "nt":
+            subprocess.run(["explorer", str(path)])
+        elif os.name == "posix":
+            subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+
+    def _new_session(self):
+        reply = QMessageBox.question(
+            self, "New Session",
+            "Start a new session? Current session will be saved.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.config.session_folder = ""
+            self.config.__post_init__()
+            self.recording_manager = RecordingManager(self.config)
+
+            self.gallery.refresh([], Path(self.recording_manager.session_folder))
+            self._clear_playback()
+
+            self.statusBar().showMessage(f"Session: {self.config.session_folder}")
+            logger.info("New session started: %s", self.config.session_folder)
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event):
+        # Save window geometry
+        g = self.geometry()
+        self.config.window_geometry = [g.x(), g.y(), g.width(), g.height()]
+        save_settings(self.config)
+
+        for capture in list(self.camera_captures.values()):
+            capture.stop()
+
+        self._stop_audio()
+
+        if self.pip_window:
+            self.pip_window.close()
+
+        logger.info("Application closing")
+        event.accept()
+
+
+# ============================================================================
+# Entry Point
+# ============================================================================
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+
+    # Set dark palette
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(200, 200, 200))
+    palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 45))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(200, 200, 200))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(200, 200, 200))
+    palette.setColor(QPalette.ColorRole.Text, QColor(200, 200, 200))
+    palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 45))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(200, 200, 200))
+    palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 255, 255))
+    palette.setColor(QPalette.ColorRole.Link, QColor(74, 158, 255))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(74, 158, 255))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(palette)
+
+    log_handler = setup_logging()
+
+    window = MainWindow(log_handler)
+    window.show()
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

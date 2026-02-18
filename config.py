@@ -1,0 +1,164 @@
+"""
+Configuration and settings persistence for Golf Swing Capture.
+"""
+
+import json
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+SETTINGS_FILE = Path.home() / "GolfSwings" / "settings.json"
+TRAINING_DATA_DIR = Path.home() / "GolfSwings" / "training_data"
+LOG_DIR = Path.home() / "GolfSwings" / "logs"
+
+
+@dataclass
+class CameraPreset:
+    """Saved camera configuration."""
+    id: Any  # int for USB, str for network URL
+    type: str = "usb"  # "usb" or "network"
+    label: str = ""
+    zoom: float = 1.0
+    rotation: int = 0  # 0, 90, 180, 270
+    flip_h: bool = False
+    flip_v: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "type": self.type,
+            "label": self.label,
+            "zoom": self.zoom,
+            "rotation": self.rotation,
+            "flip_h": self.flip_h,
+            "flip_v": self.flip_v,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CameraPreset":
+        return cls(
+            id=data.get("id", 0),
+            type=data.get("type", "usb"),
+            label=data.get("label", ""),
+            zoom=data.get("zoom", 1.0),
+            rotation=data.get("rotation", 0),
+            flip_h=data.get("flip_h", False),
+            flip_v=data.get("flip_v", False),
+        )
+
+
+@dataclass
+class AppConfig:
+    """Application configuration settings."""
+    # Recording settings
+    pre_trigger_seconds: float = 2.0
+    post_trigger_seconds: float = 4.0
+    fps: int = 30
+
+    # Audio settings
+    audio_threshold: float = 0.3
+    audio_sample_rate: int = 44100
+    audio_chunk_size: int = 1024
+    audio_device_index: Optional[int] = None
+
+    # Session settings
+    session_folder: str = ""
+
+    # UI settings
+    thumbnail_size: tuple = (160, 90)
+    pip_size: tuple = (480, 270)
+    pip_position: tuple = (100, 100)
+    window_geometry: Optional[List[int]] = None
+    playback_speed: float = 1.0
+
+    # Camera settings
+    cameras: List[CameraPreset] = field(default_factory=list)
+    primary_camera: int = 0
+
+    # Person detection
+    auto_ready_enabled: bool = False
+
+    # Drawing overlays
+    drawing_overlays: List[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.session_folder:
+            base_dir = Path.home() / "GolfSwings"
+            base_dir.mkdir(exist_ok=True)
+            session_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self.session_folder = str(base_dir / session_name)
+
+    def get_camera_ids(self) -> list:
+        """Return list of camera IDs (int or str)."""
+        return [c.id for c in self.cameras]
+
+    def get_camera_preset(self, camera_id) -> Optional[CameraPreset]:
+        """Get preset for a specific camera."""
+        for c in self.cameras:
+            if c.id == camera_id:
+                return c
+        return None
+
+    def to_dict(self) -> dict:
+        return {
+            "cameras": [c.to_dict() for c in self.cameras],
+            "primary_camera": self.primary_camera,
+            "audio_threshold": self.audio_threshold,
+            "audio_device_index": self.audio_device_index,
+            "auto_ready_enabled": self.auto_ready_enabled,
+            "playback_speed": self.playback_speed,
+            "pip_position": list(self.pip_position),
+            "pip_size": list(self.pip_size),
+            "window_geometry": self.window_geometry,
+            "drawing_overlays": self.drawing_overlays,
+        }
+
+    def update_from_dict(self, data: dict):
+        """Load settings from a dict (from JSON)."""
+        if "cameras" in data:
+            self.cameras = [CameraPreset.from_dict(c) for c in data["cameras"]]
+        if "primary_camera" in data:
+            self.primary_camera = data["primary_camera"]
+        if "audio_threshold" in data:
+            self.audio_threshold = float(data["audio_threshold"])
+        if "audio_device_index" in data:
+            self.audio_device_index = data["audio_device_index"]
+        if "auto_ready_enabled" in data:
+            self.auto_ready_enabled = bool(data["auto_ready_enabled"])
+        if "playback_speed" in data:
+            self.playback_speed = float(data["playback_speed"])
+        if "pip_position" in data:
+            self.pip_position = tuple(data["pip_position"])
+        if "pip_size" in data:
+            self.pip_size = tuple(data["pip_size"])
+        if "window_geometry" in data:
+            self.window_geometry = data["window_geometry"]
+        if "drawing_overlays" in data:
+            self.drawing_overlays = data["drawing_overlays"]
+
+
+def load_settings(config: AppConfig):
+    """Load settings from disk into config."""
+    if SETTINGS_FILE.exists():
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                data = json.load(f)
+            config.update_from_dict(data)
+            logger.info("Settings loaded from %s", SETTINGS_FILE)
+        except Exception as e:
+            logger.warning("Failed to load settings: %s", e)
+
+
+def save_settings(config: AppConfig):
+    """Save config to disk."""
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(config.to_dict(), f, indent=2)
+        logger.debug("Settings saved to %s", SETTINGS_FILE)
+    except Exception as e:
+        logger.warning("Failed to save settings: %s", e)
