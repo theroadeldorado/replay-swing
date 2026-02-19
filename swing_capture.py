@@ -168,15 +168,40 @@ CAMERA_APP_PRESETS = [
         "default_port": 8080,
     },
     {
-        "name": "DroidCam Desktop Client (iOS)",
+        "name": "DroidCam (iOS)",
+        "url_template": "http://{ip}:4747/mjpegfeed",
+        "help": "Install DroidCam from the App Store on your iPhone.\n"
+                "Open the app and note the IP address shown.\n"
+                "Both phone and PC must be on the same WiFi network.\n"
+                "Tip: For USB connection, install the DroidCam desktop client instead.",
+        "default_port": 4747,
+    },
+    {
+        "name": "DroidCam Desktop Client (USB)",
         "url_template": None,
-        "help": "iOS requires the DroidCam PC client. Click install below, then use Detect USB.",
+        "help": "For wired USB connection (iOS or Android):\n"
+                "1. Install the DroidCam desktop client (click below)\n"
+                "2. Connect phone via USB cable\n"
+                "3. Open DroidCam on phone and desktop client on PC\n"
+                "4. Connect via the desktop client, then use 'Detect USB' in camera settings.",
         "show_installer": True,
+    },
+    {
+        "name": "EpocCam / Camo (iOS)",
+        "url_template": None,
+        "help": "EpocCam or Camo create a virtual webcam on your PC.\n"
+                "1. Install the app on your iPhone and the desktop driver on PC\n"
+                "2. Connect via WiFi or USB\n"
+                "3. The camera appears as a USB webcam - use 'Detect USB' to find it.\n"
+                "No IP address needed.",
     },
     {
         "name": "Custom URL (MJPEG/RTSP)",
         "url_template": None,
-        "help": "Enter the full stream URL. Examples:\n  http://192.168.1.50:8080/video\n  rtsp://192.168.1.50:554/stream",
+        "help": "Enter the full stream URL. Examples:\n"
+                "  http://192.168.1.50:8080/video\n"
+                "  rtsp://192.168.1.50:554/stream\n"
+                "  http://192.168.1.50:4747/mjpegfeed",
     },
 ]
 
@@ -470,7 +495,7 @@ class NetworkCameraDialog(QDialog):
             self.client_status_label.setStyleSheet("color: #2ecc71; font-size: 11px; padding: 2px;")
             QApplication.processEvents()
 
-            subprocess.Popen([str(installer_path)], shell=True)
+            subprocess.Popen([str(installer_path)])
 
             self.client_status_label.setText(
                 "Installer launched! Follow the setup wizard.\n"
@@ -550,7 +575,8 @@ class CameraSettingsDialog(QDialog):
 
         # Camera actions
         btn_row = QHBoxLayout()
-        scan_usb_btn = QPushButton("Detect USB")
+        scan_usb_btn = QPushButton("Detect USB Cameras")
+        scan_usb_btn.setToolTip("Scan for USB webcams and virtual cameras (DroidCam, EpocCam, Camo)")
         scan_usb_btn.clicked.connect(self._detect_usb)
         btn_row.addWidget(scan_usb_btn)
 
@@ -664,13 +690,14 @@ class CameraSettingsDialog(QDialog):
             found = False
             for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
                 cap = cv2.VideoCapture(i, backend)
-                if cap.isOpened():
-                    ret, _ = cap.read()
-                    cap.release()
-                    if ret:
-                        self._presets.append(CameraPreset(id=i, type="usb", label=f"USB Camera {i}"))
-                        found = True
-                        break
+                try:
+                    if cap.isOpened():
+                        ret, _ = cap.read()
+                        if ret:
+                            self._presets.append(CameraPreset(id=i, type="usb", label=f"USB Camera {i}"))
+                            found = True
+                            break
+                finally:
                     cap.release()
             # Already found, skip remaining backends
         self._refresh_list()
@@ -761,6 +788,7 @@ class MainWindow(QMainWindow):
         # State
         self.camera_captures: Dict = {}
         self.frame_buffers: Dict = {}
+        self.camera_fps: Dict = {}  # cam_id -> latest measured FPS
         self.audio_detector: Optional[AudioDetector] = None
         self.current_frames: Dict = {}
 
@@ -786,8 +814,15 @@ class MainWindow(QMainWindow):
         self.pip_window: Optional[PiPWindow] = None
         self.person_detector = PersonDetector()
         self.person_detected = False
+        self._test_camera_server = None
 
         self.log_handler = log_handler
+
+        # Debounce timer for save_settings (frequent changes like threshold slider)
+        self._save_debounce_timer = QTimer()
+        self._save_debounce_timer.setSingleShot(True)
+        self._save_debounce_timer.setInterval(1000)
+        self._save_debounce_timer.timeout.connect(lambda: save_settings(self.config))
 
         self._setup_ui()
         self._setup_timers()
@@ -807,7 +842,8 @@ class MainWindow(QMainWindow):
 
         if self.config.window_geometry:
             g = self.config.window_geometry
-            self.setGeometry(g[0], g[1], g[2], g[3])
+            if len(g) == 4 and g[2] > 100 and g[3] > 100 and g[0] >= -100 and g[1] >= -100:
+                self.setGeometry(g[0], g[1], g[2], g[3])
 
         self.setStyleSheet("""
             QMainWindow { background-color: #1e1e1e; }
@@ -1136,6 +1172,11 @@ class MainWindow(QMainWindow):
         self.camera_btn.clicked.connect(self._show_camera_settings)
         camera_group_layout.addWidget(self.camera_btn)
 
+        self.test_camera_btn = QPushButton("Start Test Camera")
+        self.test_camera_btn.setToolTip("Start a mock MJPEG camera on localhost for testing/demo")
+        self.test_camera_btn.clicked.connect(self._toggle_test_camera)
+        camera_group_layout.addWidget(self.test_camera_btn)
+
         self.camera_status = QLabel("Starting...")
         self.camera_status.setStyleSheet("color: #4a9eff;")
         camera_group_layout.addWidget(self.camera_status)
@@ -1260,6 +1301,7 @@ class MainWindow(QMainWindow):
 
         capture = CameraCapture(cam_id, self.config.fps, preset)
         capture.frame_ready.connect(self._on_frame_ready)
+        capture.fps_update.connect(self._on_fps_update)
         capture.start()
         self.camera_captures[cam_id] = capture
 
@@ -1274,14 +1316,53 @@ class MainWindow(QMainWindow):
             del self.camera_captures[cam_id]
             if cam_id in self.frame_buffers:
                 del self.frame_buffers[cam_id]
+            # Clean up stale frame references
+            self.current_frames.pop(cam_id, None)
+            self.camera_fps.pop(cam_id, None)
+
+    def _on_fps_update(self, camera_id, fps: float):
+        self.camera_fps[camera_id] = fps
+        self._update_camera_status()
 
     def _update_camera_status(self):
         parts = []
         for p in self.config.cameras:
             label = p.label or str(p.id)
-            parts.append(label)
-        primary = self.config.primary_camera
-        self.camera_status.setText(f"Active: {', '.join(parts)} | Primary: {primary}")
+            fps = self.camera_fps.get(p.id)
+            has_frames = p.id in self.current_frames
+            if fps is not None and has_frames:
+                parts.append(f"[OK] {label} ({fps:.0f} fps)")
+            elif has_frames:
+                parts.append(f"[OK] {label}")
+            else:
+                parts.append(f"[--] {label}")
+        self.camera_status.setText(" | ".join(parts))
+
+    def _toggle_test_camera(self):
+        """Start/stop a mock MJPEG camera server for testing."""
+        if self._test_camera_server is not None:
+            self._test_camera_server.stop()
+            self._test_camera_server = None
+            self.test_camera_btn.setText("Start Test Camera")
+            logger.info("Test camera server stopped")
+            return
+
+        try:
+            from tests.mock_camera_server import MockCameraServer
+            self._test_camera_server = MockCameraServer(port=4747, fps=30)
+            self._test_camera_server.start()
+            url = self._test_camera_server.url + "/mjpegfeed"
+            self.test_camera_btn.setText("Stop Test Camera")
+            logger.info("Test camera server started at %s", url)
+
+            QMessageBox.information(
+                self, "Test Camera",
+                f"Mock camera running at:\n{url}\n\n"
+                "Add this as a network camera to test the app.",
+            )
+        except Exception as e:
+            logger.error("Failed to start test camera: %s", e)
+            QMessageBox.warning(self, "Error", f"Failed to start test camera:\n{e}")
 
     # ------------------------------------------------------------------
     # Audio Management
@@ -1321,7 +1402,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_frame_ready(self, camera_id, frame: np.ndarray, timestamp: float):
-        self.current_frames[camera_id] = frame
+        self.current_frames[camera_id] = frame.copy()
 
         if self.is_armed and camera_id in self.frame_buffers:
             self.frame_buffers[camera_id].add_frame(frame, timestamp)
@@ -1333,9 +1414,12 @@ class MainWindow(QMainWindow):
 
         # Person detection on primary camera
         if camera_id == self.config.primary_camera and self.config.auto_ready_enabled:
-            state_change = self.person_detector.check(frame)
-            if state_change is not None:
-                self._on_person_state_changed(state_change)
+            try:
+                state_change = self.person_detector.check(frame)
+                if state_change is not None:
+                    self._on_person_state_changed(state_change)
+            except Exception as e:
+                logger.debug("Person detection error: %s", e)
 
     def _on_person_state_changed(self, present: bool):
         self.person_detected = present
@@ -1383,8 +1467,16 @@ class MainWindow(QMainWindow):
         self.recording_start_time = time.time()
         self.recorded_frames = {}
 
+        # Grab pre-trigger buffers from all cameras that have frames
         for cam_id, buffer in self.frame_buffers.items():
-            self.recorded_frames[cam_id] = buffer.get_frames()
+            frames = buffer.get_frames()
+            if frames:
+                self.recorded_frames[cam_id] = frames
+            else:
+                # Camera configured but no frames yet - initialize empty list
+                # so post-trigger frames still get captured
+                self.recorded_frames[cam_id] = []
+                logger.debug("Camera %s has no pre-trigger frames", cam_id)
 
         self.status_label.setText("RECORDING...")
         self.status_label.setStyleSheet("""
@@ -1393,7 +1485,7 @@ class MainWindow(QMainWindow):
                 padding: 8px; background-color: #2d2d2d; border-radius: 4px;
             }
         """)
-        logger.info("Recording started")
+        logger.info("Recording started (%d cameras)", len(self.recorded_frames))
 
     def _check_recording(self):
         if self.is_recording:
@@ -1451,22 +1543,26 @@ class MainWindow(QMainWindow):
             if self.pip_window and self.pip_window.isVisible():
                 self.pip_window.display_frame(frame)
 
-        elif self.config.primary_camera in self.current_frames:
-            if not self.is_playing:
-                frame = self.current_frames[self.config.primary_camera]
+        elif not self.is_playing:
+            if self.config.primary_camera in self.current_frames:
+                frame = self.current_frames[self.config.primary_camera].copy()
 
                 if self.is_recording:
-                    frame = frame.copy()
                     cv2.circle(frame, (50, 50), 20, (0, 0, 255), -1)
                     cv2.putText(frame, "REC", (80, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 elif self.is_armed:
-                    frame = frame.copy()
                     cv2.circle(frame, (50, 50), 20, (0, 255, 255), -1)
                     cv2.putText(frame, "ARMED", (80, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
                 self.video_player.display_frame(frame)
+            elif self.camera_captures:
+                # Show waiting placeholder when cameras are configured but no frames yet
+                placeholder = np.zeros((720, 1280, 3), dtype=np.uint8)
+                cv2.putText(placeholder, "Waiting for camera...", (400, 360),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (74, 158, 255), 2)
+                self.video_player.display_frame(placeholder)
 
         # Keep drawing overlay sized to video player
         self.drawing_overlay.setGeometry(self.video_player.geometry())
@@ -1525,7 +1621,7 @@ class MainWindow(QMainWindow):
     def _on_speed_changed(self, index: int):
         self.playback_speed = self.speed_combo.currentData() or 1.0
         self.config.playback_speed = self.playback_speed
-        save_settings(self.config)
+        self._save_debounce_timer.start()
         if self.is_playing:
             interval = max(8, int(33 / self.playback_speed))
             self.playback_timer.setInterval(interval)
@@ -1598,41 +1694,50 @@ class MainWindow(QMainWindow):
         self.playback_camera_labels = clip.get("camera_labels", {})
         self.playback_multi_view = False
 
-        camera_files = clip.get("camera_files", {})
-        primary_cam_id = None
+        try:
+            camera_files = clip.get("camera_files", {})
+            primary_cam_id = None
 
-        if camera_files:
-            for cam_id, filename in camera_files.items():
-                path = Path(self.recording_manager.session_folder) / filename
-                if not path.exists():
-                    continue
+            if camera_files:
+                for cam_id, filename in camera_files.items():
+                    path = Path(self.recording_manager.session_folder) / filename
+                    if not path.exists():
+                        continue
+                    frames = []
+                    cap = cv2.VideoCapture(str(path))
+                    try:
+                        while True:
+                            ret, frame = cap.read()
+                            if not ret:
+                                break
+                            frames.append(frame)
+                    finally:
+                        cap.release()
+                    if frames:
+                        self.playback_all_frames[cam_id] = frames
+
+                    # Identify the primary camera id (the one whose filename matches clip["file"])
+                    if filename == clip["file"]:
+                        primary_cam_id = cam_id
+            else:
+                # Single camera clip - load from primary file
                 frames = []
-                cap = cv2.VideoCapture(str(path))
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    frames.append(frame)
-                cap.release()
+                cap = cv2.VideoCapture(str(clip_path))
+                try:
+                    while True:
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        frames.append(frame)
+                finally:
+                    cap.release()
                 if frames:
-                    self.playback_all_frames[cam_id] = frames
-
-                # Identify the primary camera id (the one whose filename matches clip["file"])
-                if filename == clip["file"]:
-                    primary_cam_id = cam_id
-        else:
-            # Single camera clip - load from primary file
-            frames = []
-            cap = cv2.VideoCapture(str(clip_path))
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frames.append(frame)
-            cap.release()
-            if frames:
-                self.playback_all_frames["primary"] = frames
-                primary_cam_id = "primary"
+                    self.playback_all_frames["primary"] = frames
+                    primary_cam_id = "primary"
+        except Exception as e:
+            logger.error("Failed to load clip for playback: %s", e)
+            self._clear_playback()
+            return
 
         # Set active camera to primary
         self.playback_active_camera = primary_cam_id or (list(self.playback_all_frames.keys())[0] if self.playback_all_frames else None)
@@ -1688,21 +1793,21 @@ class MainWindow(QMainWindow):
             QPushButton:checked { background-color: #4a9eff; color: white; border-color: #4a9eff; }
         """
 
+        # Store cam_id on each button via property for reliable lookup
         labels = clip_info.get("camera_labels", {})
         for cam_id in self.playback_all_frames:
             label = labels.get(cam_id, f"Camera {cam_id}")
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setStyleSheet(btn_style)
+            btn.setProperty("cam_id", cam_id)
             btn.clicked.connect(lambda checked, cid=cam_id: self._on_angle_selected(cid))
             self.angle_bar_layout.addWidget(btn)
             self.angle_buttons.append(btn)
 
-        # Check the active camera button
-        cam_ids = list(self.playback_all_frames.keys())
-        if self.playback_active_camera in cam_ids:
-            idx = cam_ids.index(self.playback_active_camera)
-            self.angle_buttons[idx].setChecked(True)
+            # Check the active camera button
+            if cam_id == self.playback_active_camera:
+                btn.setChecked(True)
 
         # Multi-view button
         self.multi_view_btn = QPushButton("Multi")
@@ -1721,10 +1826,9 @@ class MainWindow(QMainWindow):
 
         self.playback_active_camera = cam_id
 
-        # Update button checked states
-        cam_ids = list(self.playback_all_frames.keys())
-        for i, btn in enumerate(self.angle_buttons):
-            btn.setChecked(cam_ids[i] == cam_id)
+        # Update button checked states using stored cam_id property
+        for btn in self.angle_buttons:
+            btn.setChecked(btn.property("cam_id") == cam_id)
 
         # Swap playback frames
         if cam_id in self.playback_all_frames:
@@ -1830,7 +1934,7 @@ class MainWindow(QMainWindow):
 
         if self.audio_detector:
             self.audio_detector.set_threshold(threshold)
-        save_settings(self.config)
+        self._save_debounce_timer.start()
 
     # ------------------------------------------------------------------
     # Drawing Tools
@@ -1866,7 +1970,7 @@ class MainWindow(QMainWindow):
 
     def _on_shapes_changed(self):
         self.config.drawing_overlays = self.drawing_overlay.save_shapes()
-        save_settings(self.config)
+        self._save_debounce_timer.start()
 
     # ------------------------------------------------------------------
     # Gallery
@@ -1934,7 +2038,7 @@ class MainWindow(QMainWindow):
 
     def _on_auto_ready_toggled(self, checked: bool):
         self.config.auto_ready_enabled = checked
-        save_settings(self.config)
+        self._save_debounce_timer.start()
         logger.info("Auto-ready (person detection): %s", "enabled" if checked else "disabled")
 
     def _retrain_classifier(self):
@@ -1995,10 +2099,13 @@ class MainWindow(QMainWindow):
     def _open_session_folder(self):
         import subprocess
         path = self.recording_manager.session_folder
-        if os.name == "nt":
-            subprocess.run(["explorer", str(path)])
-        elif os.name == "posix":
-            subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+        try:
+            if os.name == "nt":
+                subprocess.run(["explorer", str(path)])
+            elif os.name == "posix":
+                subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+        except Exception as e:
+            logger.error("Failed to open session folder: %s", e)
 
     def _new_session(self):
         reply = QMessageBox.question(
@@ -2008,8 +2115,10 @@ class MainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            self.config.session_folder = ""
-            self.config.__post_init__()
+            base_dir = Path.home() / "GolfSwings"
+            base_dir.mkdir(exist_ok=True)
+            session_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self.config.session_folder = str(base_dir / session_name)
             self.recording_manager = RecordingManager(self.config)
 
             self.gallery.refresh([], Path(self.recording_manager.session_folder))
@@ -2023,10 +2132,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event):
-        # Save window geometry
+        # Flush debounce timer and save window geometry immediately
+        self._save_debounce_timer.stop()
         g = self.geometry()
         self.config.window_geometry = [g.x(), g.y(), g.width(), g.height()]
         save_settings(self.config)
+
+        # Stop timers before camera cleanup to prevent callbacks on destroyed objects
+        self.display_timer.stop()
+        self.recording_timer.stop()
+        self.playback_timer.stop()
 
         for capture in list(self.camera_captures.values()):
             capture.stop()
@@ -2035,6 +2150,10 @@ class MainWindow(QMainWindow):
 
         if self.pip_window:
             self.pip_window.close()
+
+        if self._test_camera_server:
+            self._test_camera_server.stop()
+            self._test_camera_server = None
 
         logger.info("Application closing")
         event.accept()

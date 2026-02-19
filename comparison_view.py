@@ -35,7 +35,7 @@ class ComparisonVideoPlayer(QLabel):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         bpl = ch * w
-        q_img = QImage(rgb.data, w, h, bpl, QImage.Format.Format_RGB888)
+        q_img = QImage(rgb.tobytes(), w, h, bpl, QImage.Format.Format_RGB888)
         scaled = q_img.scaled(
             self.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -243,12 +243,16 @@ class ComparisonWindow(QDialog):
 
         frames = []
         cap = cv2.VideoCapture(str(path))
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frames.append(frame)
-        cap.release()
+        try:
+            if not cap.isOpened():
+                return
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(frame)
+        finally:
+            cap.release()
 
         if side == "left":
             self.left_frames = frames
@@ -286,7 +290,12 @@ class ComparisonWindow(QDialog):
         self._show_frames()
 
     def _on_speed_changed(self, text: str):
-        self.speed = float(text.replace("x", ""))
+        try:
+            self.speed = float(text.replace("x", ""))
+        except (ValueError, TypeError):
+            self.speed = 1.0
+        if self.speed <= 0:
+            self.speed = 1.0
         if self.is_playing:
             self.play_timer.setInterval(int(33 / self.speed))
 

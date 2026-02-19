@@ -4,6 +4,7 @@ Configuration and settings persistence for Golf Swing Capture.
 
 import json
 import logging
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -77,7 +78,7 @@ class AppConfig:
 
     # Camera settings
     cameras: List[CameraPreset] = field(default_factory=list)
-    primary_camera: int = 0
+    primary_camera: Any = 0  # int for USB, str for network URL
 
     # Person detection
     auto_ready_enabled: bool = False
@@ -91,6 +92,17 @@ class AppConfig:
             base_dir.mkdir(exist_ok=True)
             session_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             self.session_folder = str(base_dir / session_name)
+        self._validate()
+
+    def _validate(self):
+        """Clamp values to safe ranges."""
+        self.fps = max(1, min(120, int(self.fps)))
+        self.audio_threshold = max(0.01, min(1.0, float(self.audio_threshold)))
+        self.playback_speed = max(0.1, min(10.0, float(self.playback_speed)))
+        self.pre_trigger_seconds = max(0.5, min(30.0, float(self.pre_trigger_seconds)))
+        self.post_trigger_seconds = max(0.5, min(30.0, float(self.post_trigger_seconds)))
+        self.audio_sample_rate = max(8000, min(96000, int(self.audio_sample_rate)))
+        self.audio_chunk_size = max(256, min(8192, int(self.audio_chunk_size)))
 
     def get_camera_ids(self) -> list:
         """Return list of camera IDs (int or str)."""
@@ -139,6 +151,7 @@ class AppConfig:
             self.window_geometry = data["window_geometry"]
         if "drawing_overlays" in data:
             self.drawing_overlays = data["drawing_overlays"]
+        self._validate()
 
 
 def load_settings(config: AppConfig):
@@ -149,16 +162,32 @@ def load_settings(config: AppConfig):
                 data = json.load(f)
             config.update_from_dict(data)
             logger.info("Settings loaded from %s", SETTINGS_FILE)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning("Corrupt settings file, starting fresh: %s", e)
+            corrupt_path = SETTINGS_FILE.with_suffix(".corrupt")
+            try:
+                SETTINGS_FILE.rename(corrupt_path)
+                logger.info("Renamed corrupt settings to %s", corrupt_path)
+            except OSError:
+                pass
         except Exception as e:
             logger.warning("Failed to load settings: %s", e)
 
 
 def save_settings(config: AppConfig):
-    """Save config to disk."""
+    """Save config to disk using atomic temp-file-then-rename."""
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(config.to_dict(), f, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=SETTINGS_FILE.parent, suffix=".tmp", prefix="settings_"
+        )
+        try:
+            with open(fd, "w") as f:
+                json.dump(config.to_dict(), f, indent=2)
+            Path(tmp_path).replace(SETTINGS_FILE)
+        except BaseException:
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
         logger.debug("Settings saved to %s", SETTINGS_FILE)
     except Exception as e:
         logger.warning("Failed to save settings: %s", e)

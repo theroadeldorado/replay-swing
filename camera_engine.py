@@ -4,6 +4,7 @@ and per-camera transforms (zoom, rotate, flip).
 """
 
 import logging
+import os
 import socket
 import time
 import threading
@@ -12,6 +13,9 @@ from typing import Optional, List, Dict, Any
 import cv2
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
+
+# Tell FFMPEG to use TCP for RTSP (more reliable, less packet loss than UDP)
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
 from config import AppConfig, CameraPreset
 
@@ -26,6 +30,7 @@ class CameraCapture(QThread):
     """Thread for capturing video from a USB or network camera."""
 
     frame_ready = pyqtSignal(object, np.ndarray, float)  # camera_id (int or str), frame, timestamp
+    fps_update = pyqtSignal(object, float)  # camera_id, measured fps
 
     def __init__(self, camera_id, fps: int = 30, preset: Optional[CameraPreset] = None):
         super().__init__()
@@ -96,97 +101,112 @@ class CameraCapture(QThread):
         consecutive_failures = 0
         total_frames = 1 if ret else 0
 
-        while self.running:
-            start_time = time.time()
+        # FPS tracking
+        fps_interval_start = time.time()
+        fps_frame_count = 0
+        fps_log_interval = 5.0  # log FPS every 5 seconds
+        self._current_fps = 0.0
 
-            ret, frame = self.cap.read()
-            if ret:
-                consecutive_failures = 0
-                total_frames += 1
-                frame = self._apply_transforms(frame)
+        try:
+            while self.running:
+                start_time = time.time()
+
+                # read() blocks until a frame arrives (network) or is captured (USB).
+                # With CAP_PROP_BUFFERSIZE=1 on network cameras, OpenCV only keeps
+                # the latest frame so we always get near-live video.
+                ret, frame = self.cap.read()
                 timestamp = time.time()
-                self.frame_ready.emit(self.camera_id, frame, timestamp)
 
-                # Log periodically
-                if total_frames == 30:
-                    logger.info("Camera %s: receiving frames OK (30 frames captured)", self.camera_id)
-            else:
-                consecutive_failures += 1
-                if consecutive_failures == 1:
-                    logger.debug("Camera %s: frame read failed (consecutive: %d)", self.camera_id, consecutive_failures)
-                if is_network and consecutive_failures > 30:
-                    logger.warning("Camera %s: %d consecutive failures, reconnecting...", self.camera_id, consecutive_failures)
-                    self.cap.release()
-                    self._reconnect_loop()
-                    if not self.running:
-                        return
+                if ret and frame is not None:
                     consecutive_failures = 0
-                    total_frames = 0
+                    total_frames += 1
+                    fps_frame_count += 1
+                    frame = self._apply_transforms(frame)
+                    self.frame_ready.emit(self.camera_id, frame, timestamp)
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures == 1:
+                        logger.debug("Camera %s: frame read failed (consecutive: %d)", self.camera_id, consecutive_failures)
+                    if is_network and consecutive_failures > 30:
+                        logger.warning("Camera %s: %d consecutive failures, reconnecting...", self.camera_id, consecutive_failures)
+                        self.cap.release()
+                        self._reconnect_loop()
+                        if not self.running:
+                            return
+                        if self.cap is None or not self.cap.isOpened():
+                            logger.error("Camera %s: reconnect failed, exiting thread", self.camera_id)
+                            return
+                        consecutive_failures = 0
+                        total_frames = 0
+                        fps_frame_count = 0
+                        fps_interval_start = time.time()
+                    elif is_network:
+                        # Small sleep on failure to avoid tight-looping
+                        time.sleep(0.05)
 
-            elapsed = time.time() - start_time
-            sleep_time = frame_interval - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+                # FPS calculation and logging
+                now = time.time()
+                elapsed_since_fps_log = now - fps_interval_start
+                if elapsed_since_fps_log >= fps_log_interval:
+                    self._current_fps = fps_frame_count / elapsed_since_fps_log
+                    logger.info("Camera %s: %.1f FPS (frames: %d)", self.camera_id, self._current_fps, total_frames)
+                    self.fps_update.emit(self.camera_id, self._current_fps)
+                    fps_frame_count = 0
+                    fps_interval_start = now
 
-        logger.info("Camera %s thread stopping (total frames: %d)", self.camera_id, total_frames)
-        if self.cap:
-            self.cap.release()
+                # Throttle USB cameras to target FPS; network streams are
+                # naturally paced by read() blocking on the next frame
+                if not is_network:
+                    elapsed = time.time() - start_time
+                    sleep_time = frame_interval - elapsed
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+        except Exception as e:
+            logger.exception("Camera %s thread crashed: %s", self.camera_id, e)
+        finally:
+            if self.cap:
+                self.cap.release()
+            logger.info("Camera %s stopped (%d frames)", self.camera_id, total_frames)
 
     def _open_usb_camera(self, camera_id):
         """Try multiple backends to open a USB camera."""
-        # Try DSHOW first (usually fastest on Windows)
-        cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            ret, _ = cap.read()
-            if ret:
-                logger.info("Camera %s: opened with DSHOW", camera_id)
-                return cap
-            cap.release()
-            logger.debug("Camera %s: DSHOW opened but read failed", camera_id)
-
-        # Fall back to MSMF
-        cap = cv2.VideoCapture(camera_id, cv2.CAP_MSMF)
-        if cap.isOpened():
-            ret, _ = cap.read()
-            if ret:
-                logger.info("Camera %s: opened with MSMF", camera_id)
-                return cap
-            cap.release()
-            logger.debug("Camera %s: MSMF opened but read failed", camera_id)
-
-        # Fall back to default
-        cap = cv2.VideoCapture(camera_id)
-        if cap.isOpened():
-            ret, _ = cap.read()
-            if ret:
-                logger.info("Camera %s: opened with default backend", camera_id)
-                return cap
-            cap.release()
+        for backend_name, backend in [("DSHOW", cv2.CAP_DSHOW), ("MSMF", cv2.CAP_MSMF), ("default", cv2.CAP_ANY)]:
+            cap = cv2.VideoCapture(camera_id, backend)
+            ret = False
+            try:
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    if ret:
+                        logger.info("Camera %s: opened with %s", camera_id, backend_name)
+                        return cap
+                    logger.debug("Camera %s: %s opened but read failed", camera_id, backend_name)
+            except Exception as e:
+                logger.debug("Camera %s: %s backend exception: %s", camera_id, backend_name, e)
+            finally:
+                if not ret:
+                    cap.release()
 
         logger.error("Camera %s: no working backend found", camera_id)
         return None
 
     def _open_network_camera(self, url):
         """Try to open a network camera (MJPEG, RTSP, or any URL OpenCV supports)."""
-        # Try default backend first
-        cap = cv2.VideoCapture(url)
-        if cap.isOpened():
-            ret, _ = cap.read()
-            if ret:
-                logger.info("Network camera opened: %s", url)
-                return cap
-            cap.release()
-            logger.debug("Network camera %s: opened but read failed (default backend)", url)
-
-        # Try FFMPEG backend as fallback (better RTSP/codec support)
-        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-        if cap.isOpened():
-            ret, _ = cap.read()
-            if ret:
-                logger.info("Network camera opened with FFMPEG backend: %s", url)
-                return cap
-            cap.release()
-            logger.debug("Network camera %s: FFMPEG backend opened but read failed", url)
+        for backend_name, backend in [("default", cv2.CAP_ANY), ("FFMPEG", cv2.CAP_FFMPEG)]:
+            cap = cv2.VideoCapture(url, backend)
+            ret = False
+            try:
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    ret, _ = cap.read()
+                    if ret:
+                        logger.info("Network camera opened (%s backend): %s", backend_name, url)
+                        return cap
+                    logger.debug("Network camera %s: %s opened but read failed", url, backend_name)
+            except Exception as e:
+                logger.debug("Network camera %s: %s backend exception: %s", url, backend_name, e)
+            finally:
+                if not ret:
+                    cap.release()
 
         logger.error("Network camera %s: could not open", url)
         return None
@@ -349,26 +369,25 @@ def test_network_camera(url: str) -> tuple:
     try:
         # Try default backend
         cap = cv2.VideoCapture(url)
-        if cap.isOpened():
-            ret, frame = cap.read()
-            cap.release()
-            if ret and frame is not None:
-                h, w = frame.shape[:2]
-                return True, f"Connected! Receiving {w}x{h} video"
-        else:
+        try:
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    h, w = frame.shape[:2]
+                    return True, f"Connected! Receiving {w}x{h} video"
+        finally:
             cap.release()
 
         # Try FFMPEG backend as fallback
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-        if cap.isOpened():
-            ret, frame = cap.read()
-            cap.release()
-            if ret and frame is not None:
-                h, w = frame.shape[:2]
-                return True, f"Connected! Receiving {w}x{h} video (FFMPEG)"
-            cap.release()
-            return False, "Connected but no video frames received"
-        else:
+        try:
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    h, w = frame.shape[:2]
+                    return True, f"Connected! Receiving {w}x{h} video (FFMPEG)"
+                return False, "Connected but no video frames received"
+        finally:
             cap.release()
 
         return False, f"Could not connect to {url}"
@@ -391,25 +410,28 @@ class DroidCamScanner(QThread):
 
     def run(self):
         found = []
-        subnet = self._get_local_subnet()
-        if not subnet:
-            logger.warning("Could not determine local subnet for DroidCam scan")
-            self.scan_complete.emit(found)
-            return
+        try:
+            subnet = self._get_local_subnet()
+            if not subnet:
+                logger.warning("Could not determine local subnet for DroidCam scan")
+                self.scan_complete.emit(found)
+                return
 
-        total = 254
-        for i in range(1, 255):
-            if not self._running:
-                break
-            self.scan_progress.emit(i, total)
-            ip = f"{subnet}.{i}"
+            total = 254
+            for i in range(1, 255):
+                if not self._running:
+                    break
+                self.scan_progress.emit(i, total)
+                ip = f"{subnet}.{i}"
 
-            if self._check_port(ip, self.DROIDCAM_PORT):
-                url = droidcam_url(ip)
-                desc = f"DroidCam ({ip})"
-                logger.info("Found DroidCam: %s", url)
-                found.append((url, desc))
-                self.camera_found.emit(url, desc)
+                if self._check_port(ip, self.DROIDCAM_PORT):
+                    url = droidcam_url(ip)
+                    desc = f"DroidCam ({ip})"
+                    logger.info("Found DroidCam: %s", url)
+                    found.append((url, desc))
+                    self.camera_found.emit(url, desc)
+        except Exception as e:
+            logger.exception("DroidCam scanner thread crashed: %s", e)
 
         self.scan_complete.emit(found)
 
@@ -417,9 +439,11 @@ class DroidCamScanner(QThread):
         """Get local subnet prefix (e.g. '192.168.1')."""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
+            try:
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+            finally:
+                s.close()
             parts = ip.split(".")
             return ".".join(parts[:3])
         except Exception:
@@ -429,10 +453,12 @@ class DroidCamScanner(QThread):
     def _check_port(ip: str, port: int, timeout: float = 0.2) -> bool:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(timeout)
-            result = s.connect_ex((ip, port))
-            s.close()
-            return result == 0
+            try:
+                s.settimeout(timeout)
+                result = s.connect_ex((ip, port))
+                return result == 0
+            finally:
+                s.close()
         except Exception:
             return False
 

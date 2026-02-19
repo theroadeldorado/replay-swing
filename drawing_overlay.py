@@ -174,11 +174,12 @@ class LineShape(Shape):
         elif handle == "rotate":
             cx = (self.x1 + self.x2) / 2
             cy = (self.y1 + self.y2) / 2
+            dx = self.x2 - self.x1
+            dy = self.y2 - self.y1
+            if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+                return
             angle = math.degrees(math.atan2(ny - cy, nx - cx))
-            base_angle = math.degrees(math.atan2(
-                -((self.x2 - self.x1) / 2),
-                (self.y2 - self.y1) / 2
-            ))
+            base_angle = math.degrees(math.atan2(-dx / 2, dy / 2))
             self.rotation = angle - base_angle
 
     def move(self, dx: float, dy: float):
@@ -307,6 +308,8 @@ class DrawingOverlay(QWidget):
             s = Shape.from_dict(d)
             if s:
                 self.shapes.append(s)
+            else:
+                logger.warning("Failed to deserialize shape: %s", d)
         self.update()
 
     def save_shapes(self) -> List[dict]:

@@ -26,19 +26,34 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 def composite_grid(frames: Dict[str, np.ndarray], labels: Dict[str, str],
-                   target_size: tuple = (1280, 720)) -> np.ndarray:
+                   target_size: tuple = None) -> np.ndarray:
     """Composite multiple camera frames into a grid with labels.
 
     - 1 camera: full frame
     - 2 cameras: side by side (2x1)
     - 3-4 cameras: 2x2 grid
+
+    target_size: (width, height) tuple. If None, uses first frame's size or 1280x720.
     """
     cam_ids = list(frames.keys())
     n = len(cam_ids)
-    if n == 0:
-        return np.zeros((target_size[1], target_size[0], 3), dtype=np.uint8)
 
-    tw, th = target_size
+    # Auto-detect target size from first frame if not specified
+    if target_size is None:
+        first_frame = next(iter(frames.values()), None) if frames else None
+        if first_frame is not None:
+            tw, th = first_frame.shape[1], first_frame.shape[0]
+            # For multi-camera, double the width for 2-col layouts
+            if n >= 2:
+                tw = max(tw, 1280)
+                th = max(th, 720)
+        else:
+            tw, th = 1280, 720
+    else:
+        tw, th = target_size
+
+    if n == 0:
+        return np.zeros((th, tw, 3), dtype=np.uint8)
 
     if n == 1:
         cell_w, cell_h = tw, th
@@ -63,10 +78,15 @@ def composite_grid(frames: Dict[str, np.ndarray], labels: Dict[str, str],
         frame = frames[cam_id]
         resized = cv2.resize(frame, (cell_w, cell_h))
 
-        # Draw label
+        # Draw label with semi-transparent background bar
         label = labels.get(cam_id, f"Camera {cam_id}")
-        cv2.putText(resized, label, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        bar_h = text_h + 16
+        overlay = resized[:bar_h, :].copy()
+        cv2.rectangle(resized, (0, 0), (cell_w, bar_h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.4, resized[:bar_h, :], 0.6, 0, resized[:bar_h, :])
+        cv2.putText(resized, label, (10, text_h + 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         canvas[y0:y0 + cell_h, x0:x0 + cell_w] = resized
 
@@ -98,11 +118,19 @@ class VideoPlayer(QLabel):
             return
 
         self._last_frame = frame
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Handle non-3-channel frames
+        if frame.ndim == 2:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        elif frame.shape[2] == 4:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+        else:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
         h, w, ch = rgb_frame.shape
         bytes_per_line = ch * w
 
-        q_img = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        q_img = QImage(rgb_frame.tobytes(), w, h, bytes_per_line, QImage.Format.Format_RGB888)
         scaled = q_img.scaled(
             self.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -190,10 +218,15 @@ class PiPWindow(QWidget):
     def display_frame(self, frame: np.ndarray):
         if frame is None:
             return
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if frame.ndim == 2:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        elif frame.shape[2] == 4:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+        else:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_frame.shape
         bytes_per_line = ch * w
-        q_img = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        q_img = QImage(rgb_frame.tobytes(), w, h, bytes_per_line, QImage.Format.Format_RGB888)
         scaled = q_img.scaled(
             self.video_display.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -261,8 +294,12 @@ class ThumbnailWidget(QFrame):
         layout.addWidget(self.thumb_label)
 
         shot_num = clip_info["file"].replace("shot_", "").replace(".mp4", "")
+        try:
+            shot_display = str(int(shot_num))
+        except (ValueError, TypeError):
+            shot_display = shot_num
         cameras_text = f" ({clip_info.get('cameras', 1)} cam)" if clip_info.get("cameras", 1) > 1 else ""
-        label = QLabel(f"Shot {int(shot_num)}{cameras_text}")
+        label = QLabel(f"Shot {shot_display}{cameras_text}")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("color: #ccc; font-size: 11px;")
         layout.addWidget(label)

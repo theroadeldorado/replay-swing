@@ -4,6 +4,7 @@ Recording manager and frame buffer for Golf Swing Capture.
 
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -81,7 +82,11 @@ class RecordingManager:
             except Exception:
                 self.clips = []
 
+        # Only match primary shot files (shot_NNNN.mp4), not per-camera files (shot_NNNN_camX.mp4)
+        primary_pattern = re.compile(r"^shot_\d{4}\.mp4$")
         for video_file in sorted(self.session_folder.glob("shot_*.mp4")):
+            if not primary_pattern.match(video_file.name):
+                continue
             if not any(c.get("file") == video_file.name for c in self.clips):
                 thumb_file = video_file.with_suffix(".jpg")
                 self.clips.append({
@@ -93,8 +98,10 @@ class RecordingManager:
 
     def _save_clips_metadata(self):
         clips_file = self.session_folder / "clips.json"
-        with open(clips_file, "w") as f:
+        temp_file = clips_file.with_suffix(".tmp")
+        with open(temp_file, "w") as f:
             json.dump(self.clips, f, indent=2)
+        temp_file.replace(clips_file)
 
     def save_clip(self, frames_by_camera: Dict, primary_camera, camera_labels: Dict = None) -> Optional[Dict]:
         """Save a multi-camera clip."""
@@ -127,11 +134,11 @@ class RecordingManager:
 
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             out = cv2.VideoWriter(str(filepath), fourcc, self.config.fps, (width, height))
-
-            for frame, _ in frames:
-                out.write(frame)
-
-            out.release()
+            try:
+                for frame, _ in frames:
+                    out.write(frame)
+            finally:
+                out.release()
 
             if cam_id == primary_camera and frames:
                 mid_idx = len(frames) // 3

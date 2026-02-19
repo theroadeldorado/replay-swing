@@ -63,7 +63,7 @@ class AudioFeatureExtractor:
         peak = np.max(np.abs(samples_f))
 
         # 3. Crest factor (peak/RMS) - key for impulsive sounds
-        crest_factor = peak / rms if rms > 1e-10 else 0.0
+        crest_factor = min(peak / rms, 100.0) if rms > 1e-10 else 0.0
 
         # 4. Zero-crossing rate
         sign_changes = np.diff(np.sign(samples_f))
@@ -85,9 +85,12 @@ class AudioFeatureExtractor:
             spectral_centroid = 0.0
 
         # 6. Spectral rolloff (85% energy)
-        cumulative = np.cumsum(magnitudes ** 2)
-        rolloff_idx = np.searchsorted(cumulative, 0.85 * cumulative[-1]) if cumulative[-1] > 0 else 0
-        spectral_rolloff = freqs[min(rolloff_idx, len(freqs) - 1)]
+        if len(magnitudes) > 0:
+            cumulative = np.cumsum(magnitudes ** 2)
+            rolloff_idx = np.searchsorted(cumulative, 0.85 * cumulative[-1]) if cumulative[-1] > 0 else 0
+            spectral_rolloff = freqs[min(rolloff_idx, len(freqs) - 1)]
+        else:
+            spectral_rolloff = 0.0
 
         # 7-10. Energy in frequency bands
         def band_energy(low, high):
@@ -154,6 +157,7 @@ class AudioClassifier:
     ]
 
     def __init__(self):
+        self._model_lock = threading.Lock()
         self.mode = "heuristic"
         self.model = None
         self.scaler = None
@@ -173,8 +177,9 @@ class AudioClassifier:
 
     def classify(self, features: Dict[str, float]) -> float:
         """Return confidence 0.0 - 1.0 that this is a golf shot."""
-        if self.mode == "learned" and self.model is not None:
-            return self._classify_learned(features)
+        with self._model_lock:
+            if self.mode == "learned" and self.model is not None:
+                return self._classify_learned(features)
         return self._classify_heuristic(features)
 
     def _classify_heuristic(self, f: Dict[str, float]) -> float:
@@ -295,9 +300,10 @@ class AudioClassifier:
         with open(CLASSIFIER_PATH, "wb") as f:
             pickle.dump({"model": model, "scaler": scaler, "n_samples": len(X_list)}, f)
 
-        self.model = model
-        self.scaler = scaler
-        self.mode = "learned"
+        with self._model_lock:
+            self.model = model
+            self.scaler = scaler
+            self.mode = "learned"
         logger.info("Audio classifier retrained with %d samples (mode: learned)", len(X_list))
         return True
 
@@ -374,50 +380,51 @@ class AudioDetector(QThread):
         cooldown_time = 0
         cooldown_duration = 3.0
 
-        while self.running:
-            try:
-                data = stream.read(self.config.audio_chunk_size, exception_on_overflow=False)
-                samples_int = struct.unpack(f"{len(data) // 2}h", data)
-                samples = np.array(samples_int, dtype=np.float32) / 32768.0
+        try:
+            while self.running:
+                try:
+                    data = stream.read(self.config.audio_chunk_size, exception_on_overflow=False)
+                    samples_int = struct.unpack(f"{len(data) // 2}h", data)
+                    samples = np.array(samples_int, dtype=np.float32) / 32768.0
 
-                # RMS for level meter
-                rms = np.sqrt(np.mean(samples ** 2))
-                level = min(1.0, rms * 10)
-                self.level_update.emit(level)
+                    # RMS for level meter
+                    rms = np.sqrt(np.mean(samples ** 2))
+                    level = min(1.0, rms * 10)
+                    self.level_update.emit(level)
 
-                # Store in ring buffer
-                self._audio_ring.append(data)
+                    # Store in ring buffer
+                    self._audio_ring.append(data)
 
-                # RMS gate - skip classification if too quiet
-                with self._lock:
-                    thresh = self.threshold
-                if level < thresh * 0.5:
-                    self._chunk_accumulator.clear()
-                    continue
+                    # RMS gate - skip classification if too quiet
+                    with self._lock:
+                        thresh = self.threshold
+                    if level < thresh * 0.5:
+                        self._chunk_accumulator.clear()
+                        continue
 
-                # Accumulate chunks
-                self._chunk_accumulator.append(samples)
+                    # Accumulate chunks
+                    self._chunk_accumulator.append(samples)
 
-                if len(self._chunk_accumulator) >= self._chunks_needed:
-                    combined = np.concatenate(self._chunk_accumulator)
-                    self._chunk_accumulator.clear()
+                    if len(self._chunk_accumulator) >= self._chunks_needed:
+                        combined = np.concatenate(self._chunk_accumulator)
+                        self._chunk_accumulator.clear()
 
-                    features = self.extractor.extract(combined)
-                    confidence = self.classifier.classify(features)
+                        features = self.extractor.extract(combined)
+                        confidence = self.classifier.classify(features)
 
-                    current_time = time.time()
-                    if confidence >= 0.45 and level >= thresh and current_time > cooldown_time:
-                        logger.info("Audio trigger: confidence=%.2f, rms=%.4f", confidence, rms)
-                        self.trigger_detected.emit(confidence, features)
-                        self._save_trigger_snippet(features, confidence)
-                        cooldown_time = current_time + cooldown_duration
+                        current_time = time.time()
+                        if confidence >= 0.45 and level >= thresh and current_time > cooldown_time:
+                            logger.info("Audio trigger: confidence=%.2f, rms=%.4f", confidence, rms)
+                            self.trigger_detected.emit(confidence, features)
+                            self._save_trigger_snippet(features, confidence)
+                            cooldown_time = current_time + cooldown_duration
 
-            except Exception as e:
-                logger.error("Audio read error: %s", e)
-
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
+                except Exception as e:
+                    logger.error("Audio read error: %s", e)
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
 
     def _save_trigger_snippet(self, features: Dict, confidence: float):
         """Save audio snippet and metadata around trigger for training."""
@@ -453,7 +460,10 @@ class AudioDetector(QThread):
 
     def stop(self):
         self.running = False
-        self.wait()
+        if not self.wait(5000):
+            logger.warning("AudioDetector did not stop within 5s, terminating")
+            self.terminate()
+            self.wait(2000)
 
 
 def enumerate_audio_devices() -> List[Dict]:
@@ -463,16 +473,18 @@ def enumerate_audio_devices() -> List[Dict]:
         return devices
     try:
         p = pyaudio.PyAudio()
-        for i in range(p.get_device_count()):
-            info = p.get_device_info_by_index(i)
-            if info.get("maxInputChannels", 0) > 0:
-                devices.append({
-                    "index": i,
-                    "name": info.get("name", f"Device {i}"),
-                    "channels": info.get("maxInputChannels", 0),
-                    "sample_rate": int(info.get("defaultSampleRate", 44100)),
-                })
-        p.terminate()
+        try:
+            for i in range(p.get_device_count()):
+                info = p.get_device_info_by_index(i)
+                if info.get("maxInputChannels", 0) > 0:
+                    devices.append({
+                        "index": i,
+                        "name": info.get("name", f"Device {i}"),
+                        "channels": info.get("maxInputChannels", 0),
+                        "sample_rate": int(info.get("defaultSampleRate", 44100)),
+                    })
+        finally:
+            p.terminate()
     except Exception as e:
         logger.warning("Failed to enumerate audio devices: %s", e)
     return devices
