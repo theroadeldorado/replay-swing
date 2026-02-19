@@ -169,7 +169,7 @@ CAMERA_APP_PRESETS = [
     },
     {
         "name": "DroidCam (iOS)",
-        "url_template": "http://{ip}:4747/mjpegfeed",
+        "url_template": "http://{ip}:4747/video",
         "help": "Install DroidCam from the App Store on your iPhone.\n"
                 "Open the app and note the IP address shown.\n"
                 "Both phone and PC must be on the same WiFi network.\n"
@@ -453,12 +453,20 @@ class NetworkCameraDialog(QDialog):
             self.status_label.setStyleSheet(
                 "color: #2ecc71; font-size: 12px; padding: 4px; font-weight: bold;"
             )
+            # Extract actual working URL if test_network_camera found an alternate
+            actual_url = url
+            if "(via " in message:
+                # Message format: "Connected! ... (via http://...)"
+                via_part = message.split("(via ")[-1].rstrip(")")
+                if via_part.startswith("http"):
+                    actual_url = via_part
+
             # Build label from preset name and IP/URL
             preset_name = self._selected_preset["name"] if self._selected_preset else "Network Camera"
             ip_or_url = self.ip_input.text().strip() or self.url_input.text().strip()
             label = f"{preset_name} ({ip_or_url})"
-            self.camera_added.emit(url, label)
-            logger.info("Network camera verified: %s", url)
+            self.camera_added.emit(actual_url, label)
+            logger.info("Network camera verified: %s", actual_url)
         else:
             self.status_label.setText(f"Failed: {message}")
             self.status_label.setStyleSheet("color: #e74c3c; font-size: 12px; padding: 4px;")

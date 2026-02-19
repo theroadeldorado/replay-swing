@@ -375,36 +375,52 @@ def test_droidcam_connection(ip: str) -> tuple:
 def test_network_camera(url: str) -> tuple:
     """Test if a URL serves video frames OpenCV can read.
 
-    Returns (success: bool, message: str).
+    For DroidCam URLs on port 4747, also tries alternate endpoint paths
+    since iOS uses /video while Android uses /mjpegfeed.
+
+    Returns (success: bool, message: str).  On success with an alternate
+    URL, the message includes the working URL.
     """
-    logger.info("Testing network camera at %s", url)
-    try:
-        # Try default backend
-        cap = cv2.VideoCapture(url)
-        try:
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    h, w = frame.shape[:2]
-                    return True, f"Connected! Receiving {w}x{h} video"
-        finally:
-            cap.release()
+    urls_to_try = [url]
 
-        # Try FFMPEG backend as fallback
-        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-        try:
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    h, w = frame.shape[:2]
-                    return True, f"Connected! Receiving {w}x{h} video (FFMPEG)"
-                return False, "Connected but no video frames received"
-        finally:
-            cap.release()
+    # DroidCam port 4747: try both /video and /mjpegfeed since iOS and
+    # Android serve on different paths
+    if ":4747/" in url:
+        if url.endswith("/mjpegfeed"):
+            urls_to_try.append(url.rsplit("/", 1)[0] + "/video")
+        elif url.endswith("/video"):
+            urls_to_try.append(url.rsplit("/", 1)[0] + "/mjpegfeed")
 
-        return False, f"Could not connect to {url}"
-    except Exception as e:
-        return False, f"Connection error: {e}"
+    for try_url in urls_to_try:
+        logger.info("Testing network camera at %s", try_url)
+        try:
+            # Try default backend
+            cap = cv2.VideoCapture(try_url)
+            try:
+                if cap.isOpened():
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        h, w = frame.shape[:2]
+                        suffix = f" (via {try_url})" if try_url != url else ""
+                        return True, f"Connected! Receiving {w}x{h} video{suffix}"
+            finally:
+                cap.release()
+
+            # Try FFMPEG backend as fallback
+            cap = cv2.VideoCapture(try_url, cv2.CAP_FFMPEG)
+            try:
+                if cap.isOpened():
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        h, w = frame.shape[:2]
+                        suffix = f" (via {try_url})" if try_url != url else ""
+                        return True, f"Connected! Receiving {w}x{h} video (FFMPEG){suffix}"
+            finally:
+                cap.release()
+        except Exception as e:
+            logger.debug("Test failed for %s: %s", try_url, e)
+
+    return False, f"Could not connect to {url}"
 
 
 class DroidCamScanner(QThread):
