@@ -477,14 +477,45 @@ def enumerate_audio_devices() -> List[Dict]:
             for i in range(p.get_device_count()):
                 info = p.get_device_info_by_index(i)
                 if info.get("maxInputChannels", 0) > 0:
+                    name = info.get("name", f"Device {i}")
                     devices.append({
                         "index": i,
-                        "name": info.get("name", f"Device {i}"),
+                        "name": name,
                         "channels": info.get("maxInputChannels", 0),
                         "sample_rate": int(info.get("defaultSampleRate", 44100)),
+                        "is_virtual": _is_virtual_phone_mic(name),
                     })
         finally:
             p.terminate()
     except Exception as e:
         logger.warning("Failed to enumerate audio devices: %s", e)
     return devices
+
+
+# Known virtual microphone device name patterns from phone camera apps
+_VIRTUAL_MIC_KEYWORDS = [
+    "droidcam",
+    "epoccam",
+    "camo",
+    "iriun",
+    "ivcam",
+    "ndi",
+]
+
+
+def _is_virtual_phone_mic(name: str) -> bool:
+    """Check if a device name matches a known phone-camera virtual microphone."""
+    lower = name.lower()
+    return any(kw in lower for kw in _VIRTUAL_MIC_KEYWORDS)
+
+
+def find_virtual_mic() -> Optional[Dict]:
+    """Find the first virtual phone-camera microphone, if any.
+
+    Returns the device dict or None. Useful for auto-selecting a phone mic
+    when no physical microphone is configured.
+    """
+    for dev in enumerate_audio_devices():
+        if dev.get("is_virtual"):
+            return dev
+    return None

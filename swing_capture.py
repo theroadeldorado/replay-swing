@@ -49,7 +49,7 @@ from config import (
     AppConfig, CameraPreset, load_settings, save_settings,
     SETTINGS_FILE, TRAINING_DATA_DIR, LOG_DIR,
 )
-from audio_engine import AudioDetector, AudioClassifier, enumerate_audio_devices, AUDIO_AVAILABLE
+from audio_engine import AudioDetector, AudioClassifier, enumerate_audio_devices, find_virtual_mic, AUDIO_AVAILABLE
 from camera_engine import CameraCapture, PersonDetector, DroidCamScanner, test_droidcam_connection, test_network_camera, droidcam_url
 from recording import RecordingManager, FrameBuffer
 from drawing_overlay import DrawingOverlay, LineShape, CircleShape
@@ -1129,16 +1129,34 @@ class MainWindow(QMainWindow):
         audio_dev_row.addWidget(QLabel("Audio Device:"))
         self.audio_device_combo = QComboBox()
         self.audio_device_combo.addItem("Default", None)
+        virtual_mic_index = None
         for dev in enumerate_audio_devices():
             name = dev["name"][:30]
+            if dev.get("is_virtual"):
+                name += " (phone mic)"
             self.audio_device_combo.addItem(name, dev["index"])
+            if dev.get("is_virtual") and virtual_mic_index is None:
+                virtual_mic_index = self.audio_device_combo.count() - 1
         if self.config.audio_device_index is not None:
             for i in range(self.audio_device_combo.count()):
                 if self.audio_device_combo.itemData(i) == self.config.audio_device_index:
                     self.audio_device_combo.setCurrentIndex(i)
                     break
+        elif virtual_mic_index is not None:
+            # Auto-select phone virtual mic when no device is configured
+            self.audio_device_combo.setCurrentIndex(virtual_mic_index)
+            self.config.audio_device_index = self.audio_device_combo.itemData(virtual_mic_index)
+            logger.info("Auto-selected virtual phone mic: %s",
+                        self.audio_device_combo.currentText())
         self.audio_device_combo.currentIndexChanged.connect(self._on_audio_device_changed)
         audio_dev_row.addWidget(self.audio_device_combo, stretch=1)
+
+        refresh_audio_btn = QPushButton("Refresh")
+        refresh_audio_btn.setToolTip("Rescan audio devices (use after connecting DroidCam or other virtual mic)")
+        refresh_audio_btn.setFixedWidth(70)
+        refresh_audio_btn.clicked.connect(self._refresh_audio_devices)
+        audio_dev_row.addWidget(refresh_audio_btn)
+
         audio_group_layout.addLayout(audio_dev_row)
 
         thr_row = QHBoxLayout()
@@ -1404,6 +1422,38 @@ class MainWindow(QMainWindow):
         if self.is_armed:
             self._stop_audio()
             self._start_audio()
+
+    def _refresh_audio_devices(self):
+        """Rescan audio devices and update the combo box."""
+        current_idx = self.audio_device_combo.currentData()
+        self.audio_device_combo.blockSignals(True)
+        self.audio_device_combo.clear()
+        self.audio_device_combo.addItem("Default", None)
+        virtual_mic_index = None
+        for dev in enumerate_audio_devices():
+            name = dev["name"][:30]
+            if dev.get("is_virtual"):
+                name += " (phone mic)"
+            self.audio_device_combo.addItem(name, dev["index"])
+            if dev.get("is_virtual") and virtual_mic_index is None:
+                virtual_mic_index = self.audio_device_combo.count() - 1
+
+        # Try to re-select previously selected device
+        restored = False
+        if current_idx is not None:
+            for i in range(self.audio_device_combo.count()):
+                if self.audio_device_combo.itemData(i) == current_idx:
+                    self.audio_device_combo.setCurrentIndex(i)
+                    restored = True
+                    break
+        if not restored and virtual_mic_index is not None:
+            self.audio_device_combo.setCurrentIndex(virtual_mic_index)
+            self.config.audio_device_index = self.audio_device_combo.itemData(virtual_mic_index)
+            logger.info("Auto-selected virtual phone mic: %s",
+                        self.audio_device_combo.currentText())
+        self.audio_device_combo.blockSignals(False)
+        logger.info("Audio devices refreshed, %d devices found",
+                    self.audio_device_combo.count() - 1)
 
     # ------------------------------------------------------------------
     # Frame Handling
