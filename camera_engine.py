@@ -84,9 +84,21 @@ class CameraCapture(QThread):
         logger.info("Camera %s opened successfully", self.camera_id)
 
         if not is_network:
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            self.cap.set(cv2.CAP_PROP_FPS, self.fps)
+            # Try to set preferred resolution/fps. If it fails (some MSMF
+            # cameras crash on stream reconfiguration), just use the default
+            # resolution the camera already opened with.
+            try:
+                self.cap.set(cv2.CAP_PROP_FPS, self.fps)
+                # Only attempt resolution change if camera supports it
+                cur_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                cur_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                if cur_w < 1280 or cur_h < 720:
+                    logger.info("Camera %s: native %dx%d, keeping default resolution",
+                                self.camera_id, int(cur_w), int(cur_h))
+                else:
+                    logger.info("Camera %s: native %dx%d", self.camera_id, int(cur_w), int(cur_h))
+            except Exception as e:
+                logger.debug("Camera %s: failed to set properties: %s", self.camera_id, e)
 
         # Log first frame attempt
         ret, frame = self.cap.read()
