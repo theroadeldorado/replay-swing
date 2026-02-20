@@ -31,6 +31,7 @@ class CameraCapture(QThread):
 
     frame_ready = pyqtSignal(object, np.ndarray, float)  # camera_id (int or str), frame, timestamp
     fps_update = pyqtSignal(object, float)  # camera_id, measured fps
+    connection_state = pyqtSignal(object, str)  # camera_id, "connecting"|"connected"|"disconnected"
 
     def __init__(self, camera_id, fps: int = 30, preset: Optional[CameraPreset] = None):
         super().__init__()
@@ -71,6 +72,7 @@ class CameraCapture(QThread):
         logger.info("Camera thread starting for %s (network=%s)", self.camera_id, is_network)
 
         if is_network:
+            self.connection_state.emit(self.camera_id, "connecting")
             self.cap = self._open_network_camera(self.camera_id)
         else:
             self.cap = self._open_usb_camera(self.camera_id)
@@ -81,6 +83,8 @@ class CameraCapture(QThread):
                 self._reconnect_loop()
             return
 
+        if is_network:
+            self.connection_state.emit(self.camera_id, "connected")
         logger.info("Camera %s opened successfully", self.camera_id)
 
         if not is_network:
@@ -141,6 +145,7 @@ class CameraCapture(QThread):
                         logger.debug("Camera %s: frame read failed (consecutive: %d)", self.camera_id, consecutive_failures)
                     if is_network and consecutive_failures > 30:
                         logger.warning("Camera %s: %d consecutive failures, reconnecting...", self.camera_id, consecutive_failures)
+                        self.connection_state.emit(self.camera_id, "disconnected")
                         self.cap.release()
                         self._reconnect_loop()
                         if not self.running:
@@ -148,6 +153,7 @@ class CameraCapture(QThread):
                         if self.cap is None or not self.cap.isOpened():
                             logger.error("Camera %s: reconnect failed, exiting thread", self.camera_id)
                             return
+                        self.connection_state.emit(self.camera_id, "connected")
                         consecutive_failures = 0
                         total_frames = 0
                         fps_frame_count = 0
@@ -229,6 +235,7 @@ class CameraCapture(QThread):
         attempts = 0
         while self.running:
             attempts += 1
+            self.connection_state.emit(self.camera_id, "connecting")
             logger.info("Reconnect attempt #%d to %s (waiting %.0fs)...", attempts, self.camera_id, backoff)
             time.sleep(backoff)
             if not self.running:
@@ -282,6 +289,8 @@ class CameraCapture(QThread):
 
     def stop(self):
         self.running = False
+        if isinstance(self.camera_id, str):
+            self.connection_state.emit(self.camera_id, "disconnected")
         self.wait(5000)
 
 

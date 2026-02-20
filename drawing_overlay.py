@@ -279,7 +279,7 @@ class DrawingOverlay(QWidget):
     MODE_CIRCLE = "circle"
 
     # Color palette
-    COLORS = ["#ff0000", "#00ff00", "#0088ff", "#ffff00", "#ffffff"]
+    COLORS = ["#ff0000", "#f0c040", "#34d17e", "#a855f7"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
