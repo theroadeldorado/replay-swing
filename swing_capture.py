@@ -206,31 +206,32 @@ CAMERA_APP_PRESETS = [
 ]
 
 _DIALOG_SS = """
-    QDialog { background-color: #1e1e1e; }
-    QLabel { color: #ccc; }
+    QDialog { background-color: #1c1c1c; }
+    QLabel { color: #d4d4d4; }
     QPushButton {
         background-color: #4a9eff; color: white; border: none;
         border-radius: 6px; padding: 10px 20px; font-weight: bold; font-size: 13px;
     }
     QPushButton:hover { background-color: #5aafff; }
-    QPushButton:disabled { background-color: #555; color: #999; }
+    QPushButton:disabled { background-color: #3a3a3a; color: #666; }
     QLineEdit {
-        background-color: #2d2d2d; color: #ccc;
-        border: 1px solid #444; border-radius: 4px; padding: 6px 10px; font-size: 13px;
+        background-color: #252525; color: #d4d4d4;
+        border: 1px solid #3a3a3a; border-radius: 4px; padding: 6px 10px; font-size: 13px;
     }
+    QLineEdit:focus { border-color: #4a9eff; }
     QProgressBar {
-        background-color: #333; border: 1px solid #555; border-radius: 4px;
+        background-color: #252525; border: none; border-radius: 4px;
     }
     QProgressBar::chunk { background-color: #4a9eff; border-radius: 3px; }
 """
 
 _PRESET_BTN_SS = """
     QPushButton {
-        background-color: #2d2d2d; color: #ccc; border: 1px solid #444;
+        background-color: #252525; color: #d4d4d4; border: 1px solid #3a3a3a;
         border-radius: 6px; padding: 8px 16px; font-size: 13px;
         text-align: left;
     }
-    QPushButton:hover { background-color: #3d3d3d; border-color: #4a9eff; }
+    QPushButton:hover { background-color: #333333; border-color: #4a9eff; }
     QPushButton:checked { background-color: #4a9eff; color: white; border-color: #4a9eff; }
 """
 
@@ -260,8 +261,8 @@ class NetworkCameraDialog(QDialog):
         # ---- Quick Setup (pick an app) ----
         preset_group = QGroupBox("Quick Setup (pick an app)")
         preset_group.setStyleSheet(
-            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
-            "border-radius: 8px; margin-top: 12px; padding-top: 16px; }"
+            "QGroupBox { color: #d4d4d4; font-weight: bold; border: none; "
+            "margin-top: 12px; padding-top: 16px; }"
         )
         preset_layout = QVBoxLayout(preset_group)
         preset_layout.setSpacing(4)
@@ -280,8 +281,8 @@ class NetworkCameraDialog(QDialog):
         # ---- Connection section ----
         self.conn_frame = QGroupBox("Connection")
         self.conn_frame.setStyleSheet(
-            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
-            "border-radius: 8px; margin-top: 12px; padding-top: 16px; }"
+            "QGroupBox { color: #d4d4d4; font-weight: bold; border: none; "
+            "margin-top: 12px; padding-top: 16px; }"
         )
         conn_layout = QVBoxLayout(self.conn_frame)
         conn_layout.setSpacing(8)
@@ -289,7 +290,7 @@ class NetworkCameraDialog(QDialog):
         # Help text
         self.help_label = QLabel("Select a camera app above to get started.")
         self.help_label.setWordWrap(True)
-        self.help_label.setStyleSheet("color: #aaa; font-size: 12px; padding: 2px;")
+        self.help_label.setStyleSheet("color: #9a9a9a; font-size: 12px; padding: 2px;")
         conn_layout.addWidget(self.help_label)
 
         # URL row (shown for Custom URL preset)
@@ -324,7 +325,7 @@ class NetworkCameraDialog(QDialog):
         self.status_label = QLabel("")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        self.status_label.setStyleSheet("color: #666; font-size: 12px; padding: 4px;")
         conn_layout.addWidget(self.status_label)
 
         layout.addWidget(self.conn_frame)
@@ -332,14 +333,14 @@ class NetworkCameraDialog(QDialog):
         # ---- DroidCam Desktop Client section (hidden by default) ----
         self.client_frame = QGroupBox("DroidCam Desktop Client (iOS)")
         self.client_frame.setStyleSheet(
-            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
-            "border-radius: 8px; margin-top: 12px; padding-top: 16px; }"
+            "QGroupBox { color: #d4d4d4; font-weight: bold; border: none; "
+            "margin-top: 12px; padding-top: 16px; }"
         )
         client_layout = QVBoxLayout(self.client_frame)
         client_layout.setSpacing(6)
 
         client_label = QLabel(
-            '<p style="color:#aaa; font-size:11px;">'
+            '<p style="color:#9a9a9a; font-size:11px;">'
             'iOS DroidCam requires the Windows desktop client to create a virtual webcam. '
             'After installing, connect via the DroidCam client, then use "Detect USB" '
             'in camera settings.</p>'
@@ -357,7 +358,7 @@ class NetworkCameraDialog(QDialog):
 
         self.client_status_label = QLabel("")
         self.client_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.client_status_label.setStyleSheet("color: #888; font-size: 11px; padding: 2px;")
+        self.client_status_label.setStyleSheet("color: #666; font-size: 11px; padding: 2px;")
         self.client_status_label.setWordWrap(True)
         client_layout.addWidget(self.client_status_label)
 
@@ -376,7 +377,7 @@ class NetworkCameraDialog(QDialog):
         # Done button
         done_btn = QPushButton("Done")
         done_btn.setStyleSheet(
-            "background-color: #3d3d3d; color: #ccc; border: 1px solid #555;"
+            "background-color: #333333; color: #d4d4d4; border: 1px solid #3a3a3a;"
         )
         done_btn.clicked.connect(self.accept)
         layout.addWidget(done_btn)
@@ -536,11 +537,11 @@ class CameraSettingsDialog(QDialog):
         self.setWindowTitle("Camera Settings")
         self.setMinimumSize(550, 520)
         self.setStyleSheet("""
-            QDialog { background-color: #2d2d2d; }
-            QLabel { color: #ccc; }
+            QDialog { background-color: #1c1c1c; }
+            QLabel { color: #d4d4d4; }
             QListWidget {
-                background-color: #1e1e1e; border: 1px solid #444;
-                border-radius: 4px; color: #ccc;
+                background-color: #141414; border: 1px solid #3a3a3a;
+                border-radius: 4px; color: #d4d4d4;
             }
             QListWidget::item:selected { background-color: #4a9eff; }
             QPushButton {
@@ -549,18 +550,19 @@ class CameraSettingsDialog(QDialog):
             }
             QPushButton:hover { background-color: #5aafff; }
             QLineEdit {
-                background-color: #1e1e1e; color: #ccc;
-                border: 1px solid #444; border-radius: 4px; padding: 4px 8px;
+                background-color: #252525; color: #d4d4d4;
+                border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px 8px;
             }
+            QLineEdit:focus { border-color: #4a9eff; }
             QComboBox {
-                background-color: #1e1e1e; border: 1px solid #444;
-                border-radius: 4px; padding: 4px 8px; color: #ccc;
+                background-color: #252525; border: 1px solid #3a3a3a;
+                border-radius: 4px; padding: 4px 8px; color: #d4d4d4;
             }
             QSpinBox, QDoubleSpinBox {
-                background-color: #1e1e1e; border: 1px solid #444;
-                border-radius: 4px; padding: 4px; color: #ccc;
+                background-color: #252525; border: 1px solid #3a3a3a;
+                border-radius: 4px; padding: 4px; color: #d4d4d4;
             }
-            QCheckBox { color: #ccc; }
+            QCheckBox { color: #d4d4d4; }
         """)
 
         self._presets: List[CameraPreset] = [CameraPreset.from_dict(c.to_dict()) for c in config.cameras]
@@ -597,8 +599,8 @@ class CameraSettingsDialog(QDialog):
         # Per-camera settings
         settings_group = QGroupBox("Selected Camera Settings")
         settings_group.setStyleSheet(
-            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
-            "border-radius: 8px; margin-top: 12px; padding-top: 12px; }"
+            "QGroupBox { color: #d4d4d4; font-weight: bold; border: none; "
+            "margin-top: 12px; padding-top: 12px; }"
         )
         sg_layout = QVBoxLayout(settings_group)
 
@@ -737,8 +739,8 @@ class KeyboardHelpOverlay(QDialog):
         self.setWindowTitle("Keyboard Shortcuts")
         self.setMinimumWidth(350)
         self.setStyleSheet("""
-            QDialog { background-color: #2d2d2d; }
-            QLabel { color: #ccc; font-size: 13px; }
+            QDialog { background-color: #1c1c1c; }
+            QLabel { color: #d4d4d4; font-size: 13px; }
         """)
         layout = QVBoxLayout(self)
         shortcuts = [
@@ -761,7 +763,7 @@ class KeyboardHelpOverlay(QDialog):
             row = QHBoxLayout()
             key_label = QLabel(f"  {key}  ")
             key_label.setStyleSheet(
-                "background-color: #444; border-radius: 4px; padding: 4px 8px; "
+                "background-color: #333333; border-radius: 4px; padding: 4px 8px; "
                 "font-family: Consolas; font-weight: bold; color: #fff;"
             )
             key_label.setFixedWidth(120)
@@ -854,37 +856,43 @@ class MainWindow(QMainWindow):
                 self.setGeometry(g[0], g[1], g[2], g[3])
 
         self.setStyleSheet("""
-            QMainWindow { background-color: #1e1e1e; }
+            QMainWindow { background-color: #1c1c1c; }
             QGroupBox {
-                color: #ccc; font-weight: bold;
-                border: 1px solid #444; border-radius: 8px;
+                color: #d4d4d4; font-weight: bold; font-size: 13px;
+                border: none;
                 margin-top: 12px; padding-top: 8px;
             }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            QLabel { color: #ccc; }
+            QLabel { color: #d4d4d4; font-size: 12px; }
             QPushButton {
-                background-color: #3d3d3d; color: #ccc;
-                border: 1px solid #555; border-radius: 6px;
-                padding: 8px 16px; font-size: 13px;
+                background-color: #333333; color: #d4d4d4;
+                border: 1px solid #3a3a3a; border-radius: 6px;
+                padding: 6px 14px; font-size: 12px;
             }
-            QPushButton:hover { background-color: #4d4d4d; border-color: #666; }
-            QPushButton:pressed { background-color: #2d2d2d; }
+            QPushButton:hover { background-color: #4d4d4d; border-color: #4a4a4a; }
+            QPushButton:pressed { background-color: #252525; }
             QPushButton:checked { background-color: #4a9eff; color: white; border-color: #4a9eff; }
-            QSlider::groove:horizontal { height: 6px; background-color: #444; border-radius: 3px; }
+            QSlider::groove:horizontal { height: 4px; background-color: #2e2e2e; border-radius: 2px; }
             QSlider::handle:horizontal {
-                width: 16px; height: 16px; margin: -5px 0;
-                background-color: #4a9eff; border-radius: 8px;
+                width: 14px; height: 14px; margin: -5px 0;
+                background-color: #4a9eff; border-radius: 7px;
             }
-            QSlider::sub-page:horizontal { background-color: #4a9eff; border-radius: 3px; }
-            QTabWidget::pane { border: 1px solid #444; border-radius: 4px; }
+            QSlider::sub-page:horizontal { background-color: #4a9eff; border-radius: 2px; }
+            QTabWidget::pane { border: none; border-top: 1px solid #2e2e2e; }
             QTabBar::tab {
-                background-color: #2d2d2d; color: #aaa; padding: 6px 14px;
-                border: 1px solid #444; border-bottom: none; border-radius: 4px 4px 0 0;
+                background-color: transparent; color: #9a9a9a; padding: 6px 14px;
+                border: none; border-bottom: 2px solid transparent;
             }
-            QTabBar::tab:selected { background-color: #3d3d3d; color: #fff; }
+            QTabBar::tab:selected { color: #fff; border-bottom: 2px solid #4a9eff; }
+            QTabBar::tab:hover { color: #d4d4d4; }
             QComboBox {
-                background-color: #2d2d2d; color: #ccc;
-                border: 1px solid #444; border-radius: 4px; padding: 4px 8px;
+                background-color: #252525; color: #d4d4d4;
+                border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px 8px;
+            }
+            QComboBox:hover { border-color: #4a4a4a; }
+            QComboBox QAbstractItemView {
+                background-color: #252525; color: #d4d4d4;
+                border: 1px solid #3a3a3a; selection-background-color: rgba(74,158,255,0.2);
             }
         """)
 
@@ -892,8 +900,8 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(8)
 
         # Left panel
         left_panel = QWidget()
@@ -922,17 +930,44 @@ class MainWindow(QMainWindow):
         self.color_btns = []
         for color in DrawingOverlay.COLORS:
             btn = QPushButton()
-            btn.setFixedSize(24, 24)
-            btn.setStyleSheet(f"background-color: {color}; border: 2px solid #555; border-radius: 12px;")
+            btn.setFixedSize(20, 20)
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {color}; border: 1px solid #2e2e2e; "
+                f"border-radius: 3px; padding: 0; min-width: 20px; min-height: 20px; }}"
+                f"QPushButton:hover {{ border-color: #fff; }}"
+            )
             btn.clicked.connect(lambda checked, c=color: self._set_drawing_color(c))
             self.color_btns.append(btn)
 
+        tool_btn_style = """
+            QPushButton {
+                background-color: transparent; color: #9a9a9a;
+                border: 1px solid #2e2e2e; padding: 2px 10px; font-size: 11px;
+            }
+            QPushButton:hover { border-color: #4a4a4a; color: #d4d4d4; }
+            QPushButton:checked {
+                background-color: rgba(74,158,255,0.15); color: #4a9eff; border-color: #4a9eff;
+            }
+        """
         self._tool_buttons = [self.select_tool_btn, self.line_tool_btn, self.circle_tool_btn]
         for btn in self._tool_buttons:
-            btn.setFixedHeight(30)
+            btn.setFixedHeight(26)
+            btn.setStyleSheet(tool_btn_style)
             drawing_toolbar.addWidget(btn)
+
+        self.clear_draw_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #666; border: none; font-size: 11px; }"
+            "QPushButton:hover { color: #9a9a9a; }"
+        )
         drawing_toolbar.addWidget(self.clear_draw_btn)
-        drawing_toolbar.addSpacing(10)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedHeight(20)
+        sep.setStyleSheet("color: #2e2e2e;")
+        drawing_toolbar.addWidget(sep)
+
         for btn in self.color_btns:
             drawing_toolbar.addWidget(btn)
         drawing_toolbar.addStretch()
@@ -957,11 +992,18 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.video_container, stretch=1)
 
         # Playback controls
-        playback_group = QGroupBox("Playback")
+        playback_group = QWidget()
+        playback_group.setStyleSheet("background-color: #1c1c1c;")
         playback_layout = QHBoxLayout(playback_group)
 
-        self.step_back_btn = QPushButton("|<")
-        self.step_back_btn.setFixedWidth(36)
+        ghost_btn_style = (
+            "QPushButton { background-color: transparent; color: #9a9a9a; border: none; font-size: 12px; }"
+            "QPushButton:hover { color: #d4d4d4; }"
+        )
+
+        self.step_back_btn = QPushButton("\u25c0")
+        self.step_back_btn.setFixedSize(28, 28)
+        self.step_back_btn.setStyleSheet(ghost_btn_style)
         self.step_back_btn.clicked.connect(self._step_back)
         playback_layout.addWidget(self.step_back_btn)
 
@@ -970,8 +1012,9 @@ class MainWindow(QMainWindow):
         self.play_btn.clicked.connect(self._toggle_playback)
         playback_layout.addWidget(self.play_btn)
 
-        self.step_fwd_btn = QPushButton(">|")
-        self.step_fwd_btn.setFixedWidth(36)
+        self.step_fwd_btn = QPushButton("\u25b6")
+        self.step_fwd_btn.setFixedSize(28, 28)
+        self.step_fwd_btn.setStyleSheet(ghost_btn_style)
         self.step_fwd_btn.clicked.connect(self._step_forward)
         playback_layout.addWidget(self.step_fwd_btn)
 
@@ -983,6 +1026,7 @@ class MainWindow(QMainWindow):
 
         self.frame_label = QLabel("0 / 0")
         self.frame_label.setFixedWidth(80)
+        self.frame_label.setStyleSheet("color: #666; font-size: 11px;")
         playback_layout.addWidget(self.frame_label)
 
         # Speed selector
@@ -995,11 +1039,18 @@ class MainWindow(QMainWindow):
         self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
         playback_layout.addWidget(self.speed_combo)
 
+        pip_compare_style = (
+            "QPushButton { background-color: transparent; color: #9a9a9a; border: none; font-size: 12px; padding: 4px 8px; }"
+            "QPushButton:hover { color: #d4d4d4; }"
+        )
+
         self.pip_btn = QPushButton("PiP")
+        self.pip_btn.setStyleSheet(pip_compare_style)
         self.pip_btn.clicked.connect(self._toggle_pip)
         playback_layout.addWidget(self.pip_btn)
 
         self.compare_btn = QPushButton("Compare")
+        self.compare_btn.setStyleSheet(pip_compare_style)
         self.compare_btn.clicked.connect(self._open_comparison)
         playback_layout.addWidget(self.compare_btn)
 
@@ -1010,20 +1061,21 @@ class MainWindow(QMainWindow):
         self.angle_bar_layout = QHBoxLayout(self.angle_bar)
         self.angle_bar_layout.setContentsMargins(4, 2, 4, 2)
         self.angle_bar_layout.setSpacing(4)
-        self.angle_bar.setStyleSheet("background-color: #2d2d2d; border-radius: 4px;")
+        self.angle_bar.setStyleSheet("background-color: #252525; border-radius: 4px;")
         self.angle_buttons: List[QPushButton] = []
         self.multi_view_btn: Optional[QPushButton] = None
         self.angle_bar.setVisible(False)
         left_layout.addWidget(self.angle_bar)
 
         # Recording controls (simplified: Arm + Trigger + level meter)
-        record_group = QGroupBox("Recording")
+        record_group = QWidget()
+        record_group.setStyleSheet("background-color: #1c1c1c;")
         record_layout = QHBoxLayout(record_group)
 
         self.arm_btn = QPushButton("Arm")
         self.arm_btn.setCheckable(True)
         self.arm_btn.setStyleSheet("""
-            QPushButton:checked { background-color: #e74c3c; color: white; border-color: #e74c3c; }
+            QPushButton:checked { background-color: #e84c3c; color: white; border-color: #e84c3c; }
         """)
         self.arm_btn.clicked.connect(self._toggle_armed)
         record_layout.addWidget(self.arm_btn)
@@ -1032,29 +1084,33 @@ class MainWindow(QMainWindow):
         self.manual_trigger_btn.clicked.connect(self._manual_trigger)
         record_layout.addWidget(self.manual_trigger_btn)
 
+        self.phone_btn = QPushButton("Connect Phone")
+        self.phone_btn.clicked.connect(self._on_phone_btn_clicked)
+        record_layout.addWidget(self.phone_btn)
+        self._set_phone_btn_state("idle")
+
         record_layout.addStretch()
 
         # Audio level meter (kept in recording bar)
         self.audio_level = QProgressBar()
-        self.audio_level.setFixedWidth(80)
+        self.audio_level.setFixedWidth(100)
+        self.audio_level.setFixedHeight(4)
         self.audio_level.setMaximum(100)
         self.audio_level.setTextVisible(False)
         self.audio_level.setStyleSheet("""
-            QProgressBar { background-color: #333; border: 1px solid #555; border-radius: 4px; }
-            QProgressBar::chunk { background-color: #4a9eff; border-radius: 3px; }
+            QProgressBar { background-color: #252525; border: none; border-radius: 2px; }
+            QProgressBar::chunk { background-color: #4a9eff; border-radius: 2px; }
         """)
         record_layout.addWidget(self.audio_level)
 
         left_layout.addWidget(record_group)
 
         # Status
-        self.status_label = QLabel("Ready - Select cameras and arm to begin")
-        self.status_label.setStyleSheet("""
-            QLabel {
-                color: #4a9eff; font-size: 14px; font-weight: bold;
-                padding: 8px; background-color: #2d2d2d; border-radius: 4px;
-            }
-        """)
+        self.status_label = QLabel("\u25cf  Ready - Arm to begin capturing")
+        self.status_label.setStyleSheet(
+            "QLabel { background-color: transparent; padding: 4px 8px; font-size: 12px; "
+            "font-weight: normal; color: #9a9a9a; }"
+        )
         left_layout.addWidget(self.status_label)
 
         main_layout.addWidget(left_panel, stretch=2)
@@ -1063,7 +1119,7 @@ class MainWindow(QMainWindow):
         right_panel = QWidget()
         right_panel.setFixedWidth(400)
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setSpacing(6)
+        right_layout.setSpacing(8)
 
         self.right_tabs = QTabWidget()
 
@@ -1085,25 +1141,25 @@ class MainWindow(QMainWindow):
 
         self.auto_ready_check = QCheckBox("Auto-Ready (Person Detection)")
         self.auto_ready_check.setChecked(self.config.auto_ready_enabled)
-        self.auto_ready_check.setStyleSheet("color: #ccc;")
+        self.auto_ready_check.setStyleSheet("color: #d4d4d4;")
         self.auto_ready_check.toggled.connect(self._on_auto_ready_toggled)
         det_layout.addWidget(self.auto_ready_check)
 
         self.person_status_label = QLabel("Person: Not detected")
-        self.person_status_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        self.person_status_label.setStyleSheet("color: #666; font-size: 11px; padding: 2px 0;")
         det_layout.addWidget(self.person_status_label)
 
         det_layout.addWidget(QLabel("Audio Classifier:"))
         self.classifier_mode_label = QLabel("Mode: heuristic")
-        self.classifier_mode_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        self.classifier_mode_label.setStyleSheet("color: #666; font-size: 11px; padding: 2px 0;")
         det_layout.addWidget(self.classifier_mode_label)
 
         self.training_count_label = QLabel("Training samples: 0")
-        self.training_count_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        self.training_count_label.setStyleSheet("color: #666; font-size: 11px; padding: 2px 0;")
         det_layout.addWidget(self.training_count_label)
 
         self.last_confidence_label = QLabel("Last trigger confidence: --")
-        self.last_confidence_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        self.last_confidence_label.setStyleSheet("color: #666; font-size: 11px; padding: 2px 0;")
         det_layout.addWidget(self.last_confidence_label)
 
         self.retrain_btn = QPushButton("Retrain Classifier")
@@ -1119,10 +1175,6 @@ class MainWindow(QMainWindow):
 
         # Audio Settings group
         audio_group = QGroupBox("Audio Settings")
-        audio_group.setStyleSheet(
-            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
-            "border-radius: 8px; margin-top: 12px; padding-top: 12px; }"
-        )
         audio_group_layout = QVBoxLayout(audio_group)
 
         audio_dev_row = QHBoxLayout()
@@ -1178,8 +1230,8 @@ class MainWindow(QMainWindow):
         self.confidence_bar.setMaximum(100)
         self.confidence_bar.setTextVisible(True)
         self.confidence_bar.setStyleSheet("""
-            QProgressBar { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #ccc; font-size: 10px; }
-            QProgressBar::chunk { background-color: #2ecc71; border-radius: 3px; }
+            QProgressBar { background-color: #252525; border: none; border-radius: 3px; color: #d4d4d4; font-size: 11px; }
+            QProgressBar::chunk { background-color: #34d17e; border-radius: 3px; }
         """)
         conf_row.addWidget(self.confidence_bar, stretch=1)
         audio_group_layout.addLayout(conf_row)
@@ -1188,10 +1240,6 @@ class MainWindow(QMainWindow):
 
         # Camera Settings group
         camera_group = QGroupBox("Camera Settings")
-        camera_group.setStyleSheet(
-            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
-            "border-radius: 8px; margin-top: 12px; padding-top: 12px; }"
-        )
         camera_group_layout = QVBoxLayout(camera_group)
 
         self.camera_btn = QPushButton("Configure Cameras")
@@ -1204,17 +1252,13 @@ class MainWindow(QMainWindow):
         camera_group_layout.addWidget(self.test_camera_btn)
 
         self.camera_status = QLabel("Starting...")
-        self.camera_status.setStyleSheet("color: #4a9eff;")
+        self.camera_status.setStyleSheet("color: #9a9a9a;")
         camera_group_layout.addWidget(self.camera_status)
 
         settings_layout.addWidget(camera_group)
 
         # Session group
         session_group = QGroupBox("Session")
-        session_group.setStyleSheet(
-            "QGroupBox { color: #ccc; font-weight: bold; border: 1px solid #444; "
-            "border-radius: 8px; margin-top: 12px; padding-top: 12px; }"
-        )
         session_group_layout = QVBoxLayout(session_group)
 
         self.open_folder_btn = QPushButton("Open Folder")
@@ -1239,7 +1283,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(right_panel)
 
         # Status bar
-        self.statusBar().setStyleSheet("color: #888;")
+        self.statusBar().setStyleSheet("color: #555;")
         self.statusBar().showMessage(f"Session: {self.config.session_folder}")
 
     # ------------------------------------------------------------------
@@ -1309,6 +1353,104 @@ class MainWindow(QMainWindow):
     # Camera Management
     # ------------------------------------------------------------------
 
+    def _find_phone_preset(self) -> Optional[CameraPreset]:
+        """Return the first network camera preset, or None."""
+        for p in self.config.cameras:
+            if p.type == "network":
+                return p
+        return None
+
+    def _on_phone_btn_clicked(self):
+        """Handle phone button click based on current state."""
+        preset = self._find_phone_preset()
+        if preset is None:
+            # No phone saved — open NetworkCameraDialog to add one
+            dlg = NetworkCameraDialog(self)
+            url_holder = {}
+
+            def on_added(url, label):
+                url_holder["url"] = url
+                url_holder["label"] = label
+
+            dlg.camera_added.connect(on_added)
+            dlg.exec()
+
+            if "url" in url_holder:
+                new_preset = CameraPreset(
+                    id=url_holder["url"], type="network", label=url_holder["label"]
+                )
+                self.config.cameras.append(new_preset)
+                save_settings(self.config)
+                self._start_camera(new_preset)
+                self._set_phone_btn_state("connecting")
+                self._update_camera_status()
+            return
+
+        # Phone preset exists
+        cam_id = preset.id
+        if cam_id in self.current_frames:
+            # Connected and has frames
+            fps = self.camera_fps.get(cam_id)
+            fps_str = f" ({fps:.0f} fps)" if fps else ""
+            self.statusBar().showMessage(f"Phone connected{fps_str}", 3000)
+            return
+
+        if cam_id in self.camera_captures:
+            # Thread exists but no frames yet — already reconnecting
+            self._set_phone_btn_state("connecting")
+            self.statusBar().showMessage("Phone connecting...", 2000)
+            return
+
+        # No thread — start camera
+        self._start_camera(preset)
+        self._set_phone_btn_state("connecting")
+
+    def _set_phone_btn_state(self, state: str):
+        """Update phone button appearance based on connection state."""
+        styles = {
+            "idle": ("color: #9a9a9a; border-color: #3a3a3a;", None),
+            "connecting": ("color: #f0c040; border-color: #f0c040;", "Connecting..."),
+            "connected": ("color: #34d17e; border-color: #34d17e;", "Phone Connected"),
+            "disconnected": ("color: #e84c3c; border-color: #e84c3c;", "Reconnect Phone"),
+        }
+        style, text = styles.get(state, styles["idle"])
+        self.phone_btn.setStyleSheet(
+            f"QPushButton {{ {style} background-color: #333333; border: 1px solid; "
+            f"border-radius: 6px; padding: 6px 14px; font-size: 12px; }}"
+            f"QPushButton:hover {{ background-color: #4d4d4d; }}"
+        )
+        if text:
+            self.phone_btn.setText(text)
+        else:
+            # idle — text depends on whether a phone preset exists
+            preset = self._find_phone_preset()
+            self.phone_btn.setText("Connect Phone" if preset else "Add Phone")
+
+        # "connected" reverts to idle after 3 seconds
+        if state == "connected":
+            QTimer.singleShot(3000, lambda: self._set_phone_btn_state("idle"))
+
+    def _on_camera_connection_state(self, camera_id, state: str):
+        """Handle connection state changes from camera threads."""
+        preset = self._find_phone_preset()
+        if preset is None or camera_id != preset.id:
+            return
+        self._set_phone_btn_state(state)
+
+    def _refresh_phone_btn_state(self):
+        """Set phone button state based on current camera status."""
+        preset = self._find_phone_preset()
+        if preset is None:
+            self._set_phone_btn_state("idle")
+            return
+        cam_id = preset.id
+        if cam_id in self.current_frames:
+            self._set_phone_btn_state("connected")
+        elif cam_id in self.camera_captures:
+            self._set_phone_btn_state("connecting")
+        else:
+            self._set_phone_btn_state("idle")
+
     def _start_cameras(self):
         """Start cameras from config (or default)."""
         if not self.config.cameras:
@@ -1319,6 +1461,7 @@ class MainWindow(QMainWindow):
             self._start_camera(preset)
 
         self._update_camera_status()
+        self._refresh_phone_btn_state()
 
     def _start_camera(self, preset: CameraPreset):
         cam_id = preset.id
@@ -1328,6 +1471,7 @@ class MainWindow(QMainWindow):
         capture = CameraCapture(cam_id, self.config.fps, preset)
         capture.frame_ready.connect(self._on_frame_ready)
         capture.fps_update.connect(self._on_fps_update)
+        capture.connection_state.connect(self._on_camera_connection_state)
         capture.start()
         self.camera_captures[cam_id] = capture
 
@@ -1483,14 +1627,14 @@ class MainWindow(QMainWindow):
         self.person_detected = present
         if present:
             self.person_status_label.setText("Person: DETECTED")
-            self.person_status_label.setStyleSheet("color: #2ecc71; font-size: 12px; padding: 4px;")
+            self.person_status_label.setStyleSheet("color: #34d17e; font-size: 11px; padding: 2px 0;")
             logger.info("Person detected - auto-arming")
             if not self.is_armed:
                 self.arm_btn.setChecked(True)
                 self._toggle_armed()
         else:
             self.person_status_label.setText("Person: Not detected")
-            self.person_status_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+            self.person_status_label.setStyleSheet("color: #666; font-size: 11px; padding: 2px 0;")
             logger.info("Person left - auto-disarming")
             if self.is_armed and not self.is_recording:
                 self.arm_btn.setChecked(False)
@@ -1536,13 +1680,11 @@ class MainWindow(QMainWindow):
                 self.recorded_frames[cam_id] = []
                 logger.debug("Camera %s has no pre-trigger frames", cam_id)
 
-        self.status_label.setText("RECORDING...")
-        self.status_label.setStyleSheet("""
-            QLabel {
-                color: #e74c3c; font-size: 14px; font-weight: bold;
-                padding: 8px; background-color: #2d2d2d; border-radius: 4px;
-            }
-        """)
+        self.status_label.setText("\u25cf  Recording...")
+        self.status_label.setStyleSheet(
+            "QLabel { background-color: transparent; padding: 4px 8px; font-size: 12px; "
+            "font-weight: 600; color: #e84c3c; }"
+        )
         logger.info("Recording started (%d cameras)", len(self.recorded_frames))
 
     def _check_recording(self):
@@ -1576,13 +1718,11 @@ class MainWindow(QMainWindow):
             visible = self.recording_manager.get_visible_clips()
             self._load_clip_for_playback(len(visible) - 1)
 
-        self.status_label.setText("Shot captured! Waiting for next shot...")
-        self.status_label.setStyleSheet("""
-            QLabel {
-                color: #2ecc71; font-size: 14px; font-weight: bold;
-                padding: 8px; background-color: #2d2d2d; border-radius: 4px;
-            }
-        """)
+        self.status_label.setText("\u25cf  Shot captured! Waiting for next shot...")
+        self.status_label.setStyleSheet(
+            "QLabel { background-color: transparent; padding: 4px 8px; font-size: 12px; "
+            "font-weight: normal; color: #34d17e; }"
+        )
 
         for buffer in self.frame_buffers.values():
             buffer.clear()
@@ -1844,8 +1984,8 @@ class MainWindow(QMainWindow):
 
         btn_style = """
             QPushButton {
-                background-color: #3d3d3d; color: #ccc;
-                border: 1px solid #555; border-radius: 4px; padding: 4px 12px; font-size: 12px;
+                background-color: #333333; color: #d4d4d4;
+                border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px 12px; font-size: 12px;
             }
             QPushButton:hover { background-color: #4d4d4d; }
             QPushButton:checked { background-color: #4a9eff; color: white; border-color: #4a9eff; }
@@ -1958,24 +2098,20 @@ class MainWindow(QMainWindow):
         if self.is_armed:
             self._start_audio()
             self.arm_btn.setText("Armed")
-            self.status_label.setText("Armed - Waiting for shot...")
-            self.status_label.setStyleSheet("""
-                QLabel {
-                    color: #f1c40f; font-size: 14px; font-weight: bold;
-                    padding: 8px; background-color: #2d2d2d; border-radius: 4px;
-                }
-            """)
+            self.status_label.setText("\u25cf  Armed - Waiting for shot...")
+            self.status_label.setStyleSheet(
+                "QLabel { background-color: transparent; padding: 4px 8px; font-size: 12px; "
+                "font-weight: normal; color: #f0c040; }"
+            )
             logger.info("System armed")
         else:
             self._stop_audio()
             self.arm_btn.setText("Arm")
-            self.status_label.setText("Ready - Arm to begin capturing")
-            self.status_label.setStyleSheet("""
-                QLabel {
-                    color: #4a9eff; font-size: 14px; font-weight: bold;
-                    padding: 8px; background-color: #2d2d2d; border-radius: 4px;
-                }
-            """)
+            self.status_label.setText("\u25cf  Ready - Arm to begin capturing")
+            self.status_label.setStyleSheet(
+                "QLabel { background-color: transparent; padding: 4px 8px; font-size: 12px; "
+                "font-weight: normal; color: #9a9a9a; }"
+            )
             logger.info("System disarmed")
 
     def _manual_trigger(self):
@@ -2149,6 +2285,7 @@ class MainWindow(QMainWindow):
             self.config.primary_camera = primary
             save_settings(self.config)
             self._update_camera_status()
+            self._refresh_phone_btn_state()
 
     # ------------------------------------------------------------------
     # Session Management
@@ -2227,15 +2364,15 @@ def main():
 
     # Set dark palette
     palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor(200, 200, 200))
-    palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
-    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 45))
-    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(200, 200, 200))
-    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(200, 200, 200))
-    palette.setColor(QPalette.ColorRole.Text, QColor(200, 200, 200))
-    palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 45))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor(200, 200, 200))
+    palette.setColor(QPalette.ColorRole.Window, QColor(28, 28, 28))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(212, 212, 212))
+    palette.setColor(QPalette.ColorRole.Base, QColor(20, 20, 20))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(37, 37, 37))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(37, 37, 37))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(212, 212, 212))
+    palette.setColor(QPalette.ColorRole.Text, QColor(212, 212, 212))
+    palette.setColor(QPalette.ColorRole.Button, QColor(51, 51, 51))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(212, 212, 212))
     palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 255, 255))
     palette.setColor(QPalette.ColorRole.Link, QColor(74, 158, 255))
     palette.setColor(QPalette.ColorRole.Highlight, QColor(74, 158, 255))
