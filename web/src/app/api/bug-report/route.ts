@@ -1,0 +1,105 @@
+import { NextRequest, NextResponse } from 'next/server';
+
+// Simple in-memory rate limiter
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+
+  // Clean up expired entries periodically
+  if (rateLimitMap.size > 1000) {
+    for (const [key, val] of rateLimitMap) {
+      if (val.resetAt < now) rateLimitMap.delete(key);
+    }
+  }
+
+  if (!entry || entry.resetAt < now) {
+    rateLimitMap.set(ip, { count: 1, resetAt: now + 3600_000 });
+    return false;
+  }
+
+  if (entry.count >= 5) return true;
+
+  entry.count++;
+  return false;
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+
+    if (isRateLimited(ip)) {
+      return NextResponse.json(
+        { error: 'Too many bug reports. Please try again later.' },
+        { status: 429 }
+      );
+    }
+
+    const body = await request.json();
+    const { title, description, steps, expected, honeypot } = body;
+
+    // Honeypot check
+    if (honeypot) {
+      // Silently accept to not reveal the honeypot
+      return NextResponse.json({ success: true });
+    }
+
+    // Validation
+    if (!title || typeof title !== 'string' || title.trim().length === 0) {
+      return NextResponse.json({ error: 'Title is required.' }, { status: 400 });
+    }
+    if (!description || typeof description !== 'string' || description.trim().length === 0) {
+      return NextResponse.json({ error: 'Description is required.' }, { status: 400 });
+    }
+
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return NextResponse.json(
+        { error: 'Bug reporting is not configured. Please report issues directly on GitHub.' },
+        { status: 500 }
+      );
+    }
+
+    // Build issue body
+    const sections = [
+      `## Description\n${description.trim()}`,
+      steps?.trim() ? `## Steps to Reproduce\n${steps.trim()}` : null,
+      expected?.trim() ? `## Expected Behavior\n${expected.trim()}` : null,
+      `---\n*Submitted via [golfcamreplay.com](https://golfcamreplay.com)*`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const res = await fetch(
+      'https://api.github.com/repos/theroadeldorado/golf-cam-replay/issues',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: `[Bug] ${title.trim()}`,
+          body: sections,
+          labels: ['bug', 'user-reported'],
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      console.error('GitHub API error:', res.status, errorData);
+      return NextResponse.json(
+        { error: 'Failed to create bug report. Please try again or report directly on GitHub.' },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    console.error('Bug report error:', err);
+    return NextResponse.json({ error: 'Something went wrong.' }, { status: 500 });
+  }
+}
