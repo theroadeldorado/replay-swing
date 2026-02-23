@@ -19,7 +19,7 @@ export default function Header() {
     <header className="fixed top-0 left-0 right-0 z-50 bg-warm-white/80 backdrop-blur-md border-b border-sand/60">
       <div className="mx-auto max-w-7xl flex items-center justify-between px-6 py-4">
         <a href="#" className="font-serif text-xl font-bold text-espresso tracking-tight">
-          Golf Cam Replay
+          ReplaySwing
         </a>
 
         {/* Desktop nav */}

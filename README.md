@@ -1,6 +1,6 @@
-# Golf Cam Replay
+# ReplaySwing
 
-Monorepo for the Golf Cam Replay project.
+Monorepo for the ReplaySwing project.
 
 ## Structure
 

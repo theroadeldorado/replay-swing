@@ -1,5 +1,5 @@
 """
-Side-by-side comparison view for Golf Swing Capture.
+Side-by-side comparison view for ReplaySwing.
 """
 
 import logging

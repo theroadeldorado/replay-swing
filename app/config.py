@@ -1,5 +1,5 @@
 """
-Configuration and settings persistence for Golf Swing Capture.
+Configuration and settings persistence for ReplaySwing.
 """
 
 import json

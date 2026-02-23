@@ -1,5 +1,5 @@
 """
-Reusable UI components for Golf Swing Capture.
+Reusable UI components for ReplaySwing.
 """
 
 import logging

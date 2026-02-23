@@ -66,13 +66,13 @@ export async function POST(request: NextRequest) {
       `## Description\n${description.trim()}`,
       steps?.trim() ? `## Steps to Reproduce\n${steps.trim()}` : null,
       expected?.trim() ? `## Expected Behavior\n${expected.trim()}` : null,
-      `---\n*Submitted via [golfcamreplay.com](https://golfcamreplay.com)*`,
+      `---\n*Submitted via [replayswing.com](https://replayswing.com)*`,
     ]
       .filter(Boolean)
       .join('\n\n');
 
     const res = await fetch(
-      'https://api.github.com/repos/theroadeldorado/golf-cam-replay/issues',
+      'https://api.github.com/repos/theroadeldorado/replay-swing/issues',
       {
         method: 'POST',
         headers: {

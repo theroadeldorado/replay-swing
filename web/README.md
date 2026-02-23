@@ -1,8 +1,8 @@
-# golfcamreplay.com
+# replayswing.com
 
-Marketing website for [Golf Cam Replay](https://github.com/theroadeldorado/golf-cam-replay) — a free, open-source Windows app for recording and analyzing golf swings with audio-triggered capture, multi-camera support, and PiP overlay for golf simulators.
+Marketing website for [ReplaySwing](https://github.com/theroadeldorado/replay-swing) — a free, open-source Windows app for recording and analyzing golf swings with audio-triggered capture, multi-camera support, and PiP overlay for golf simulators.
 
-**Live site:** [golfcamreplaycom.vercel.app](https://golfcamreplaycom.vercel.app)
+**Live site:** [replayswing.com](https://replayswing.com)
 
 ## Tech Stack
 
@@ -29,7 +29,7 @@ Copy `.env.example` to `.env` and add your GitHub token:
 GITHUB_TOKEN=your_github_pat_here
 ```
 
-The token needs **Issues: Read and write** permission on `theroadeldorado/golf-cam-replay`. It's used by:
+The token needs **Issues: Read and write** permission on `theroadeldorado/replay-swing`. It's used by:
 
 - **Bug report form** (`/api/bug-report`) — creates GitHub issues from user submissions
 - **Download section** — fetches the latest release info from the GitHub API (revalidates hourly)
@@ -42,6 +42,9 @@ src/
 │   ├── layout.tsx              # Root layout, fonts, metadata
 │   ├── page.tsx                # Single-page site (all sections)
 │   ├── globals.css             # Tailwind theme + custom styles
+│   ├── docs/                   # Documentation page
+│   │   ├── layout.tsx
+│   │   └── page.tsx
 │   └── api/bug-report/
 │       └── route.ts            # GitHub Issues API proxy
 ├── components/
@@ -53,7 +56,12 @@ src/
 │   ├── Download.tsx            # Download CTA with GitHub release info
 │   ├── Support.tsx             # Venmo donation section
 │   ├── BugReport.tsx           # Bug report form
-│   └── Footer.tsx              # Footer with links
+│   ├── Footer.tsx              # Footer with links
+│   └── docs/                   # Docs page components
+│       ├── DocsSection.tsx
+│       └── DocsSidebar.tsx
+├── data/
+│   └── docs.ts                 # Documentation content data
 └── lib/
     └── github.ts               # GitHub API helpers
 ```

@@ -1,8 +1,8 @@
-# Golf Cam Replay
+# ReplaySwing
 
 A free, open-source Windows application for recording and analyzing your golf swings. Features audio-triggered recording with pre-shot buffering, multi-camera synchronization, drawing overlays, swing comparison, and a Picture-in-Picture overlay for use with your simulator.
 
-![Golf Cam Replay](screenshot.png)
+![ReplaySwing](screenshot.png)
 
 ## Features
 
@@ -37,7 +37,7 @@ A free, open-source Windows application for recording and analyzing your golf sw
 
 3. **Install dependencies**:
    ```cmd
-   cd golf_swing_capture
+   cd replay-swing/app
    pip install -r requirements.txt
    ```
 

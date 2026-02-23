@@ -3,7 +3,7 @@ import { Github, Download, Bug, DollarSign, BookOpen } from 'lucide-react';
 const links = [
   {
     label: 'GitHub Repo',
-    href: 'https://github.com/theroadeldorado/golf-cam-replay',
+    href: 'https://github.com/theroadeldorado/replay-swing',
     icon: Github,
     external: true,
   },
@@ -24,7 +24,7 @@ export default function Footer() {
       <div className="mx-auto max-w-7xl px-6">
         <div className="flex flex-col md:flex-row items-center justify-between gap-6">
           <div>
-            <span className="font-serif text-lg font-bold text-espresso">Golf Cam Replay</span>
+            <span className="font-serif text-lg font-bold text-espresso">ReplaySwing</span>
             <p className="text-sm text-bronze mt-1">
               Made with love for the golf sim community
             </p>
@@ -49,7 +49,7 @@ export default function Footer() {
 
         <div className="mt-8 pt-6 border-t border-sand text-center">
           <p className="text-xs text-bronze/60">
-            MIT License &middot; &copy; {new Date().getFullYear()} Golf Cam Replay
+            MIT License &middot; &copy; {new Date().getFullYear()} ReplaySwing
           </p>
         </div>
       </div>

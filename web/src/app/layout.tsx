@@ -15,21 +15,21 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://golfcamreplay.com'),
-  title: 'Golf Cam Replay — Free Swing Capture & Instant Replay for Golf Simulators',
+  metadataBase: new URL('https://replayswing.com'),
+  title: 'ReplaySwing — Free Swing Capture & Instant Replay for Golf Simulators',
   description:
     'Record and replay your golf swings automatically. Audio-triggered capture, PiP overlay for simulators, multi-camera support. Free & open source.',
   openGraph: {
-    title: 'Golf Cam Replay — Free Swing Capture & Instant Replay for Golf Simulators',
+    title: 'ReplaySwing — Free Swing Capture & Instant Replay for Golf Simulators',
     description:
       'Record and replay your golf swings automatically. Audio-triggered capture, PiP overlay for simulators, multi-camera support. Free & open source.',
     type: 'website',
-    url: 'https://golfcamreplay.com',
+    url: 'https://replayswing.com',
     images: [{ url: '/og-image.png', width: 1200, height: 630 }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Golf Cam Replay — Free Swing Capture & Instant Replay',
+    title: 'ReplaySwing — Free Swing Capture & Instant Replay',
     description:
       'Record and replay your golf swings automatically. Audio-triggered capture, PiP overlay for simulators, multi-camera support. Free & open source.',
   },

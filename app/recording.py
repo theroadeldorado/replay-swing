@@ -1,5 +1,5 @@
 """
-Recording manager and frame buffer for Golf Swing Capture.
+Recording manager and frame buffer for ReplaySwing.
 """
 
 import json

@@ -9,7 +9,7 @@ export default async function Download() {
       <div className="mx-auto max-w-7xl px-6">
         <div className="text-center max-w-2xl mx-auto">
           <h2 className="font-serif text-4xl md:text-5xl font-bold text-espresso">
-            Download Golf Cam Replay
+            Download ReplaySwing
           </h2>
           <p className="mt-4 text-lg text-bronze">
             Free and open source. No account needed, no strings attached.
@@ -36,7 +36,7 @@ export default async function Download() {
               </>
             ) : (
               <a
-                href="https://github.com/theroadeldorado/golf-cam-replay/releases/latest"
+                href="https://github.com/theroadeldorado/replay-swing/releases/latest"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 bg-green-accent hover:bg-green-hover text-white font-semibold px-8 py-4 rounded transition-colors shadow-lg shadow-green-accent/20 text-lg"
@@ -48,7 +48,7 @@ export default async function Download() {
 
             <div className="mt-6 pt-6 border-t border-sand">
               <a
-                href="https://github.com/theroadeldorado/golf-cam-replay/releases"
+                href="https://github.com/theroadeldorado/replay-swing/releases"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 text-sm text-gold hover:text-espresso transition-colors font-medium"

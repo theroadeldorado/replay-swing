@@ -60,7 +60,7 @@ export default function BugReport() {
             <CheckCircle size={48} className="text-green-accent mx-auto mb-4" />
             <h3 className="font-semibold text-xl text-espresso mb-2">Bug Report Submitted</h3>
             <p className="text-bronze">
-              Thanks for helping improve Golf Cam Replay! A GitHub issue has been created and
+              Thanks for helping improve ReplaySwing! A GitHub issue has been created and
               we&apos;ll look into it.
             </p>
             <button

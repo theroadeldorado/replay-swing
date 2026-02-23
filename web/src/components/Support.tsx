@@ -9,7 +9,7 @@ export default function Support() {
             Support the Project
           </h2>
           <p className="mt-4 text-lg text-bronze leading-relaxed">
-            Golf Cam Replay is free and open source. If it&apos;s helped your game, consider
+            ReplaySwing is free and open source. If it&apos;s helped your game, consider
             dropping a tip.
           </p>
 
@@ -24,7 +24,7 @@ export default function Support() {
               Tip on Venmo
             </a>
             <a
-              href="https://github.com/theroadeldorado/golf-cam-replay"
+              href="https://github.com/theroadeldorado/replay-swing"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 border-2 border-sand hover:border-tan text-espresso font-semibold px-6 py-3 rounded transition-colors"

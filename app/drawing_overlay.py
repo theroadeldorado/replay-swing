@@ -1,5 +1,5 @@
 """
-Drawing overlay system for Golf Swing Capture.
+Drawing overlay system for ReplaySwing.
 Provides line and circle drawing tools rendered on top of the video feed.
 Coordinates are normalized 0.0-1.0 relative to video frame.
 """

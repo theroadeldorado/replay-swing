@@ -1,6 +1,6 @@
 """
-Golf Swing Capture - Multi-Camera Swing Recording System
-========================================================
+ReplaySwing - Multi-Camera Swing Recording System
+==================================================
 Records golf swings triggered by audio detection with multi-camera sync support.
 Features:
 - Audio-triggered recording (2s pre-buffer + 4s post-trigger)
@@ -840,14 +840,14 @@ class MainWindow(QMainWindow):
         self._start_cameras()
         self._load_existing_clips()
 
-        logger.info("Golf Swing Capture started (session: %s)", self.config.session_folder)
+        logger.info("ReplaySwing started (session: %s)", self.config.session_folder)
 
     # ------------------------------------------------------------------
     # UI Setup
     # ------------------------------------------------------------------
 
     def _setup_ui(self):
-        self.setWindowTitle("Golf Swing Capture")
+        self.setWindowTitle("ReplaySwing")
         self.setMinimumSize(1200, 800)
 
         if self.config.window_geometry:

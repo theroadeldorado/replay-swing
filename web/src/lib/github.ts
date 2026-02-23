@@ -17,7 +17,7 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
       headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
     }
     const res = await fetch(
-      'https://api.github.com/repos/theroadeldorado/golf-cam-replay/releases?per_page=5',
+      'https://api.github.com/repos/theroadeldorado/replay-swing/releases?per_page=5',
       {
         headers,
         next: { revalidate: 3600 },

@@ -20,9 +20,9 @@ export const docSections: DocSection[] = [
 
       <h3>Installation</h3>
       <ol>
-        <li>Download the latest <code>.exe</code> installer from the <a href="#download">Download section</a> or the <a href="https://github.com/theroadeldorado/golf-cam-replay/releases/latest" target="_blank" rel="noopener noreferrer">GitHub Releases</a> page.</li>
+        <li>Download the latest <code>.exe</code> installer from the <a href="#download">Download section</a> or the <a href="https://github.com/theroadeldorado/replay-swing/releases/latest" target="_blank" rel="noopener noreferrer">GitHub Releases</a> page.</li>
         <li>Run the installer &mdash; no admin privileges required.</li>
-        <li>Launch <strong>Golf Cam Replay</strong> from the Start Menu or desktop shortcut.</li>
+        <li>Launch <strong>ReplaySwing</strong> from the Start Menu or desktop shortcut.</li>
       </ol>
 
       <h3>First Launch</h3>
@@ -41,7 +41,7 @@ export const docSections: DocSection[] = [
     iconName: 'Camera',
     content: `
       <h3>USB Cameras</h3>
-      <p>Plug in any USB webcam and the app detects it automatically. Golf Cam Replay tries multiple capture backends (DSHOW &rarr; MSMF &rarr; default) so most cameras work out of the box.</p>
+      <p>Plug in any USB webcam and the app detects it automatically. ReplaySwing tries multiple capture backends (DSHOW &rarr; MSMF &rarr; default) so most cameras work out of the box.</p>
       <p>For best results, use a camera that supports <strong>720p or higher</strong> at 30 fps.</p>
 
       <h3>Multi-Camera Recording</h3>
@@ -89,7 +89,7 @@ export const docSections: DocSection[] = [
         <li>Install the camera app on your phone and the desktop companion (if required).</li>
         <li>Connect your phone and PC to the <strong>same Wi-Fi network</strong>.</li>
         <li>Start streaming on the phone &mdash; note the IP address shown.</li>
-        <li>In Golf Cam Replay, go to <strong>Settings &rarr; Add Camera</strong> and enter the URL.</li>
+        <li>In ReplaySwing, go to <strong>Settings &rarr; Add Camera</strong> and enter the URL.</li>
       </ol>
 
       <h3>Tips</h3>
@@ -105,7 +105,7 @@ export const docSections: DocSection[] = [
     title: 'Audio Trigger',
     iconName: 'AudioLines',
     content: `
-      <p>Golf Cam Replay listens for the distinctive sound of club impact and triggers recording automatically. Two detection modes are available.</p>
+      <p>ReplaySwing listens for the distinctive sound of club impact and triggers recording automatically. Two detection modes are available.</p>
 
       <h3>Heuristic Classifier (Default)</h3>
       <p>Hand-tuned rules analyse 12 spectral features of each audio chunk, scoring for characteristics typical of a golf impact:</p>
@@ -422,7 +422,7 @@ export const docSections: DocSection[] = [
         <tbody>
           <tr><td>No camera detected</td><td>Check USB connection, then click <strong>Refresh Cameras</strong> in Settings. Try a different USB port.</td></tr>
           <tr><td>Black/frozen feed</td><td>Close other apps using the camera (Zoom, Teams, OBS). Restart the app.</td></tr>
-          <tr><td>Low frame rate</td><td>Lower the resolution in your camera&rsquo;s software, or reduce the FPS setting in Golf Cam Replay.</td></tr>
+          <tr><td>Low frame rate</td><td>Lower the resolution in your camera&rsquo;s software, or reduce the FPS setting in ReplaySwing.</td></tr>
           <tr><td>Network camera won&rsquo;t connect</td><td>Verify phone and PC are on the same Wi-Fi. Check the IP and port. Ensure the streaming app is running.</td></tr>
           <tr><td>Network camera keeps dropping</td><td>Switch to 5 GHz Wi-Fi or use a USB tether. The app reconnects automatically with up to 30 s backoff.</td></tr>
         </tbody>
@@ -454,7 +454,7 @@ export const docSections: DocSection[] = [
       <ul>
         <li><strong>Check the logs</strong> &mdash; the Log tab shows real-time messages. Log files are saved in <code>~/GolfSwings/logs/</code>.</li>
         <li><strong>Reset settings</strong> &mdash; delete <code>~/GolfSwings/settings.json</code> to restore all defaults.</li>
-        <li><strong>Report a bug</strong> &mdash; use the <a href="#bug-report">bug report form</a> or open an issue on <a href="https://github.com/theroadeldorado/golf-cam-replay/issues" target="_blank" rel="noopener noreferrer">GitHub</a>.</li>
+        <li><strong>Report a bug</strong> &mdash; use the <a href="#bug-report">bug report form</a> or open an issue on <a href="https://github.com/theroadeldorado/replay-swing/issues" target="_blank" rel="noopener noreferrer">GitHub</a>.</li>
       </ul>
     `,
   },

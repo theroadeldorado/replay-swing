@@ -31,10 +31,10 @@ jobs:
 
       - name: Build executable
         run: |
-          pyinstaller --onefile --windowed --name "GolfCamReplay" --icon NONE swing_capture.py
+          pyinstaller --onefile --windowed --name "ReplaySwing" --icon NONE swing_capture.py
 
       - name: Upload .exe to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.event.release.tag_name }} dist/GolfCamReplay.exe --clobber
+          gh release upload ${{ github.event.release.tag_name }} dist/ReplaySwing.exe --clobber

@@ -12,7 +12,7 @@ export default function DocsPage() {
             Documentation
           </h1>
           <p className="mt-4 text-lg text-bronze">
-            Everything you need to set up and get the most out of Golf Cam Replay.
+            Everything you need to set up and get the most out of ReplaySwing.
           </p>
         </div>
 
