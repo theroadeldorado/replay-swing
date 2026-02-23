@@ -25,3 +25,123 @@ body {
   color: var(--color-espresso);
   font-family: var(--font-sans);
 }
+
+/* Scoped prose styles for documentation sections */
+.docs-prose h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--color-espresso);
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.docs-prose h3:first-child {
+  margin-top: 0;
+}
+
+.docs-prose p {
+  color: var(--color-bronze);
+  line-height: 1.7;
+  margin-bottom: 0.75rem;
+}
+
+.docs-prose ul,
+.docs-prose ol {
+  color: var(--color-bronze);
+  line-height: 1.7;
+  margin-bottom: 0.75rem;
+  padding-left: 1.5rem;
+}
+
+.docs-prose ul {
+  list-style-type: disc;
+}
+
+.docs-prose ol {
+  list-style-type: decimal;
+}
+
+.docs-prose li {
+  margin-bottom: 0.25rem;
+}
+
+.docs-prose code {
+  font-size: 0.85em;
+  background-color: var(--color-cream);
+  border: 1px solid var(--color-sand);
+  border-radius: 0.25rem;
+  padding: 0.1em 0.35em;
+  color: var(--color-espresso);
+}
+
+.docs-prose pre {
+  background-color: var(--color-charcoal);
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}
+
+.docs-prose pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.docs-prose kbd {
+  display: inline-block;
+  font-size: 0.8em;
+  font-family: var(--font-sans);
+  background-color: var(--color-warm-white);
+  border: 1px solid var(--color-sand);
+  border-bottom-width: 2px;
+  border-radius: 0.25rem;
+  padding: 0.1em 0.4em;
+  color: var(--color-espresso);
+  white-space: nowrap;
+}
+
+.docs-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.docs-prose thead th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-espresso);
+  border-bottom: 2px solid var(--color-sand);
+  padding: 0.5rem 0.75rem;
+}
+
+.docs-prose tbody td {
+  color: var(--color-bronze);
+  border-bottom: 1px solid var(--color-sand);
+  padding: 0.5rem 0.75rem;
+  vertical-align: top;
+}
+
+.docs-prose tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.docs-prose a {
+  color: var(--color-gold);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.15s;
+}
+
+.docs-prose a:hover {
+  color: var(--color-espresso);
+}
+
+.docs-prose strong {
+  color: var(--color-espresso);
+  font-weight: 600;
+}

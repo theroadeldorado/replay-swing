@@ -1,4 +1,4 @@
-import { Github, Download, Bug, DollarSign } from 'lucide-react';
+import { Github, Download, Bug, DollarSign, BookOpen } from 'lucide-react';
 
 const links = [
   {
@@ -7,6 +7,7 @@ const links = [
     icon: Github,
     external: true,
   },
+  { label: 'Docs', href: '/docs', icon: BookOpen, external: false },
   { label: 'Download', href: '#download', icon: Download, external: false },
   { label: 'Report Bug', href: '#bug-report', icon: Bug, external: false },
   {
