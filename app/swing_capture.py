@@ -725,7 +725,11 @@ class CameraSettingsDialog(QDialog):
             if i in existing_usb_ids:
                 continue
             found = False
-            for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
+            if sys.platform == "win32":
+                backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+            else:
+                backends = [cv2.CAP_ANY]
+            for backend in backends:
                 cap = cv2.VideoCapture(i, backend)
                 try:
                     if cap.isOpened():

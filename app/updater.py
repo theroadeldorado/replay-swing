@@ -6,6 +6,7 @@ if a newer version is available.
 
 import json
 import logging
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,9 +88,15 @@ class UpdateChecker(QThread):
                 if tag.lstrip("v") == state.get("skipped_version"):
                     continue
 
-                # Find .exe asset
+                # Find platform-appropriate asset
+                if sys.platform == "darwin":
+                    extensions = (".dmg",)
+                elif sys.platform == "win32":
+                    extensions = (".exe",)
+                else:
+                    extensions = (".dmg", ".exe")
                 for asset in release.get("assets", []):
-                    if asset["name"].lower().endswith(".exe"):
+                    if asset["name"].lower().endswith(extensions):
                         self.update_available.emit(
                             tag.lstrip("v"),
                             asset["browser_download_url"],

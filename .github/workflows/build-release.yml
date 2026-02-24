@@ -43,3 +43,46 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload ${{ github.event.release.tag_name }} dist/ReplaySwing.exe --clobber
+
+  build-macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: app/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Stamp version
+        run: |
+          ver="${{ github.event.release.tag_name }}"
+          ver="${ver#v}"
+          echo "__version__ = \"$ver\"" > version.py
+
+      - name: Build application
+        run: |
+          pyinstaller --onefile --windowed --name "ReplaySwing" --icon NONE swing_capture.py
+
+      - name: Package .dmg
+        run: |
+          mkdir -p dmg_contents
+          cp dist/ReplaySwing dmg_contents/
+          hdiutil create -volname "ReplaySwing" -srcfolder dmg_contents -ov -format UDZO ReplaySwing.dmg
+
+      - name: Upload .dmg to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} ReplaySwing.dmg --clobber
