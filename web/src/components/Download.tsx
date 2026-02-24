@@ -77,7 +77,7 @@ export default async function Download() {
             Free and open source. No account needed, no strings attached.
           </p>
 
-          <div className="mt-10 grid sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
+          <div className="mt-10 grid sm:grid-cols-2 gap-4 max-w-4xl mx-auto">
             <PlatformCard
               icon={<WindowsIcon size={20} />}
               label="Windows 10 / 11"
