@@ -150,9 +150,17 @@ class VideoPlayer(QLabel):
 # ============================================================================
 
 class PiPWindow(QWidget):
-    """Floating Picture-in-Picture window for overlay playback."""
+    """Floating Picture-in-Picture window with multi-camera support.
+
+    Shows one video panel per visible camera, stacked vertically.
+    Each panel is a 16:9 block. The window grows taller as cameras are added.
+    """
 
     closed = pyqtSignal()
+    camera_toggled = pyqtSignal(object, bool)  # (cam_id, checked)
+
+    PANEL_WIDTH = 400
+    PANEL_HEIGHT = 225  # 400 * 9/16
 
     def __init__(self, parent=None):
         super().__init__(
@@ -171,12 +179,13 @@ class PiPWindow(QWidget):
 
         self.container = QFrame()
         self.container.setStyleSheet("""
-            QFrame {
+            QFrame#pipContainer {
                 background-color: #2d2d2d;
-                border: 2px solid #4a9eff;
-                border-radius: 12px;
+                border: 1px solid #444;
+                border-radius: 8px;
             }
         """)
+        self.container.setObjectName("pipContainer")
         container_layout = QVBoxLayout(self.container)
         container_layout.setContentsMargins(4, 4, 4, 4)
         container_layout.setSpacing(2)
@@ -184,40 +193,118 @@ class PiPWindow(QWidget):
         # Title bar
         title_bar = QWidget()
         title_bar.setFixedHeight(24)
-        title_bar.setStyleSheet("background-color: transparent;")
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(8, 0, 8, 0)
 
         title_label = QLabel("Swing Replay")
-        title_label.setStyleSheet("color: #4a9eff; font-weight: bold; font-size: 11px;")
+        title_label.setStyleSheet("color: #aaa; font-weight: bold; font-size: 11px; border: none;")
         title_layout.addWidget(title_label)
         title_layout.addStretch()
 
+        # Camera dropdown
+        self.camera_btn = QPushButton("Cameras")
+        self.camera_btn.setStyleSheet(
+            "QPushButton { background-color: #333; color: #d4d4d4; border: 1px solid #3a3a3a; "
+            "border-radius: 4px; padding: 2px 8px; font-size: 10px; }"
+            "QPushButton:hover { background-color: #4d4d4d; }"
+            "QPushButton::menu-indicator { image: none; }"
+        )
+        self.camera_menu = QMenu()
+        self.camera_menu.setStyleSheet(
+            "QMenu { background-color: #2d2d2d; border: 1px solid #444; border-radius: 4px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; color: #ccc; }"
+            "QMenu::item:selected { background-color: #4a9eff; color: white; }"
+            "QMenu::indicator { width: 14px; height: 14px; }"
+            "QMenu::indicator:checked { background-color: #4a9eff; border: 1px solid #4a9eff; border-radius: 2px; }"
+            "QMenu::indicator:unchecked { background-color: #1a1a1a; border: 1px solid #555; border-radius: 2px; }"
+        )
+        self.camera_btn.setMenu(self.camera_menu)
+        title_layout.addWidget(self.camera_btn)
+
         close_btn = QPushButton("X")
         close_btn.setFixedSize(20, 20)
-        close_btn.setStyleSheet("""
-            QPushButton { background-color: transparent; color: #888; border: none; font-size: 14px; }
-            QPushButton:hover { color: #ff5555; }
-        """)
+        close_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #888; border: none; font-size: 14px; }"
+            "QPushButton:hover { color: #ff5555; }"
+        )
         close_btn.clicked.connect(self.close)
         title_layout.addWidget(close_btn)
 
         container_layout.addWidget(title_bar)
 
-        self.video_display = QLabel()
-        self.video_display.setMinimumSize(320, 180)
-        self.video_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_display.setStyleSheet("background-color: #1a1a1a; border-radius: 4px;")
-        container_layout.addWidget(self.video_display)
+        # Video panels container
+        self._panels_widget = QWidget()
+        self._panels_layout = QVBoxLayout(self._panels_widget)
+        self._panels_layout.setContentsMargins(0, 0, 0, 0)
+        self._panels_layout.setSpacing(2)
+        container_layout.addWidget(self._panels_widget)
 
         layout.addWidget(self.container)
 
         self._drag_pos = None
-        self.resize(480, 300)
+        self._video_panels: Dict[str, QLabel] = {}  # cam_id -> QLabel
+        self._visible_cameras: List[str] = []
 
-    def display_frame(self, frame: np.ndarray):
+    def set_cameras(self, cameras: List[Dict], visible_ids: set):
+        """Rebuild camera menu and video panels.
+
+        cameras: list of dicts with 'id' and 'label' keys
+        visible_ids: set of camera ids to show
+        """
+        self.camera_menu.clear()
+        for cam in cameras:
+            action = self.camera_menu.addAction(cam["label"])
+            action.setCheckable(True)
+            action.setChecked(cam["id"] in visible_ids)
+            action.toggled.connect(
+                lambda checked, cid=cam["id"]: self.camera_toggled.emit(cid, checked)
+            )
+
+        # Rebuild panels for visible cameras
+        old_ids = set(self._video_panels.keys())
+        new_visible = [c for c in cameras if c["id"] in visible_ids]
+        new_ids = [str(c["id"]) for c in new_visible]
+
+        # Remove panels no longer visible
+        for cid in list(self._video_panels.keys()):
+            if cid not in new_ids:
+                panel = self._video_panels.pop(cid)
+                self._panels_layout.removeWidget(panel)
+                panel.deleteLater()
+
+        # Add new panels
+        for cam in new_visible:
+            cid = str(cam["id"])
+            if cid not in self._video_panels:
+                panel = QLabel()
+                panel.setFixedSize(self.PANEL_WIDTH, self.PANEL_HEIGHT)
+                panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                panel.setStyleSheet("background-color: #1a1a1a; border-radius: 4px; border: none;")
+                self._panels_layout.addWidget(panel)
+                self._video_panels[cid] = panel
+
+        self._visible_cameras = new_ids
+        self._update_size()
+
+        # Hide dropdown when only 1 camera
+        total = len(cameras)
+        vis = len(new_visible)
+        self.camera_btn.setVisible(total > 1)
+        if total > 1:
+            self.camera_btn.setText(f"Cameras ({vis}/{total})")
+
+    def _update_size(self):
+        """Resize window to fit stacked panels."""
+        n = max(1, len(self._video_panels))
+        h = 30 + n * (self.PANEL_HEIGHT + 2) + 8  # title + panels + margins
+        self.setFixedWidth(self.PANEL_WIDTH + 8)
+        self.setFixedHeight(h)
+
+    def display_frame(self, frame: np.ndarray, camera_id: str = None):
+        """Display a frame. If camera_id given, update that panel only."""
         if frame is None:
             return
+
         if frame.ndim == 2:
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
         elif frame.shape[2] == 4:
@@ -227,12 +314,46 @@ class PiPWindow(QWidget):
         h, w, ch = rgb_frame.shape
         bytes_per_line = ch * w
         q_img = QImage(rgb_frame.tobytes(), w, h, bytes_per_line, QImage.Format.Format_RGB888)
+
+        if camera_id and str(camera_id) in self._video_panels:
+            panel = self._video_panels[str(camera_id)]
+            scaled = q_img.scaled(
+                panel.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            panel.setPixmap(QPixmap.fromImage(scaled))
+        else:
+            # Fallback: display on first panel (single-frame mode)
+            for panel in self._video_panels.values():
+                scaled = q_img.scaled(
+                    panel.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                panel.setPixmap(QPixmap.fromImage(scaled))
+                break
+            # If no panels yet, create a default one
+            if not self._video_panels:
+                self._default_display(q_img)
+
+    def _default_display(self, q_img):
+        """Fallback display when no camera panels configured."""
+        if not self._video_panels:
+            panel = QLabel()
+            panel.setFixedSize(self.PANEL_WIDTH, self.PANEL_HEIGHT)
+            panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            panel.setStyleSheet("background-color: #1a1a1a; border-radius: 4px; border: none;")
+            self._panels_layout.addWidget(panel)
+            self._video_panels["_default"] = panel
+            self._update_size()
+        panel = self._video_panels.get("_default") or next(iter(self._video_panels.values()))
         scaled = q_img.scaled(
-            self.video_display.size(),
+            panel.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self.video_display.setPixmap(QPixmap.fromImage(scaled))
+        panel.setPixmap(QPixmap.fromImage(scaled))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -267,8 +388,10 @@ class ThumbnailWidget(QFrame):
         self.clip_info = clip_info
         self.selected = False
 
+        self.setObjectName("thumbCard")
         self.setFixedSize(170, 130)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._update_style()
 
         layout = QVBoxLayout(self)
@@ -299,28 +422,48 @@ class ThumbnailWidget(QFrame):
         except (ValueError, TypeError):
             shot_display = shot_num
         cameras_text = f" ({clip_info.get('cameras', 1)} cam)" if clip_info.get("cameras", 1) > 1 else ""
-        label = QLabel(f"Shot {shot_display}{cameras_text}")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("color: #ccc; font-size: 11px;")
-        layout.addWidget(label)
+        self.text_label = QLabel(f"Shot {shot_display}{cameras_text}")
+        self.text_label.setObjectName("shotLabel")
+        self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.text_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.text_label)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
     def _update_style(self):
         if self.selected:
-            self.setStyleSheet("""
-                QFrame { background-color: #3d5a80; border: 2px solid #4a9eff; border-radius: 8px; }
-            """)
+            self.setStyleSheet(
+                "QFrame#thumbCard { background-color: #e0e0e0; border: 1px solid #999; border-radius: 8px; }"
+            )
+            if hasattr(self, 'text_label'):
+                self.text_label.setStyleSheet("color: #222; font-size: 11px; background: transparent;")
         else:
-            self.setStyleSheet("""
-                QFrame { background-color: #2d2d2d; border: 1px solid #444; border-radius: 8px; }
-                QFrame:hover { border: 1px solid #4a9eff; background-color: #363636; }
-            """)
+            self.setStyleSheet(
+                "QFrame#thumbCard { background-color: #2d2d2d; border: 1px solid #444; border-radius: 8px; }"
+            )
+            if hasattr(self, 'text_label'):
+                self.text_label.setStyleSheet("color: #fff; font-size: 11px; background: transparent;")
 
     def set_selected(self, selected: bool):
         self.selected = selected
         self._update_style()
+
+    def enterEvent(self, event):
+        if not self.selected:
+            self.setStyleSheet(
+                "QFrame#thumbCard { background-color: #e0e0e0; border: 1px solid #999; border-radius: 8px; }"
+            )
+            self.text_label.setStyleSheet("color: #222; font-size: 11px; background: transparent;")
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if not self.selected:
+            self.setStyleSheet(
+                "QFrame#thumbCard { background-color: #2d2d2d; border: 1px solid #444; border-radius: 8px; }"
+            )
+            self.text_label.setStyleSheet("color: #fff; font-size: 11px; background: transparent;")
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -419,6 +562,12 @@ class ClipGallery(QScrollArea):
             col = i % 3
             self.grid_layout.addWidget(thumb, row, col)
             self.thumbnails.append(thumb)
+
+    def deselect_all(self):
+        """Deselect current thumbnail."""
+        if 0 <= self.selected_index < len(self.thumbnails):
+            self.thumbnails[self.selected_index].set_selected(False)
+        self.selected_index = -1
 
     def _on_thumbnail_clicked(self, index: int):
         if 0 <= self.selected_index < len(self.thumbnails):

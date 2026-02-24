@@ -821,6 +821,7 @@ class MainWindow(QMainWindow):
         self.playback_active_camera: Optional[str] = None  # current angle cam_id
         self.playback_multi_view = False  # True = grid view of all cameras
 
+        self.live_visible_cameras: set = set()  # cameras shown in live feed
         self.pip_window: Optional[PiPWindow] = None
         self.person_detector = PersonDetector()
         self.person_detected = False
@@ -972,7 +973,38 @@ class MainWindow(QMainWindow):
             drawing_toolbar.addWidget(btn)
         drawing_toolbar.addStretch()
 
+        # Camera dropdown (right side of drawing toolbar)
+        self.camera_dropdown_btn = QPushButton("Cameras")
+        self.camera_dropdown_btn.setStyleSheet(
+            "QPushButton { background-color: #333333; color: #d4d4d4; border: 1px solid #3a3a3a; "
+            "border-radius: 4px; padding: 4px 12px; font-size: 12px; }"
+            "QPushButton:hover { background-color: #4d4d4d; }"
+            "QPushButton::menu-indicator { image: none; }"
+        )
+        self.camera_dropdown_menu = QMenu(self)
+        self.camera_dropdown_menu.setStyleSheet(
+            "QMenu { background-color: #2d2d2d; border: 1px solid #444; border-radius: 4px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; color: #ccc; }"
+            "QMenu::item:selected { background-color: #4a9eff; color: white; }"
+            "QMenu::indicator { width: 14px; height: 14px; }"
+            "QMenu::indicator:checked { background-color: #4a9eff; border: 1px solid #4a9eff; border-radius: 2px; }"
+            "QMenu::indicator:unchecked { background-color: #1a1a1a; border: 1px solid #555; border-radius: 2px; }"
+        )
+        self.camera_dropdown_btn.setMenu(self.camera_dropdown_menu)
+        drawing_toolbar.addWidget(self.camera_dropdown_btn)
+
         left_layout.addLayout(drawing_toolbar)
+
+        # Angle selector bar (hidden by default, shown when multi-camera clip loaded)
+        self.angle_bar = QWidget()
+        self.angle_bar_layout = QHBoxLayout(self.angle_bar)
+        self.angle_bar_layout.setContentsMargins(4, 2, 4, 2)
+        self.angle_bar_layout.setSpacing(4)
+        self.angle_bar.setStyleSheet("background-color: #252525; border-radius: 4px;")
+        self.angle_buttons: List[QPushButton] = []
+        self.multi_view_btn: Optional[QPushButton] = None
+        self.angle_bar.setVisible(False)
+        left_layout.addWidget(self.angle_bar)
 
         # Video display with overlay stack
         self.video_container = QWidget()
@@ -1000,6 +1032,11 @@ class MainWindow(QMainWindow):
             "QPushButton { background-color: transparent; color: #9a9a9a; border: none; font-size: 12px; }"
             "QPushButton:hover { color: #d4d4d4; }"
         )
+
+        self.live_btn = QPushButton("Live")
+        self.live_btn.clicked.connect(self._go_to_live)
+        playback_layout.addWidget(self.live_btn)
+        self._update_live_btn_style()
 
         self.step_back_btn = QPushButton("\u25c0")
         self.step_back_btn.setFixedSize(28, 28)
@@ -1039,33 +1076,15 @@ class MainWindow(QMainWindow):
         self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
         playback_layout.addWidget(self.speed_combo)
 
-        pip_compare_style = (
-            "QPushButton { background-color: transparent; color: #9a9a9a; border: none; font-size: 12px; padding: 4px 8px; }"
-            "QPushButton:hover { color: #d4d4d4; }"
-        )
-
         self.pip_btn = QPushButton("PiP")
-        self.pip_btn.setStyleSheet(pip_compare_style)
         self.pip_btn.clicked.connect(self._toggle_pip)
         playback_layout.addWidget(self.pip_btn)
 
         self.compare_btn = QPushButton("Compare")
-        self.compare_btn.setStyleSheet(pip_compare_style)
         self.compare_btn.clicked.connect(self._open_comparison)
         playback_layout.addWidget(self.compare_btn)
 
         left_layout.addWidget(playback_group)
-
-        # Angle selector bar (hidden by default, shown when multi-camera clip loaded)
-        self.angle_bar = QWidget()
-        self.angle_bar_layout = QHBoxLayout(self.angle_bar)
-        self.angle_bar_layout.setContentsMargins(4, 2, 4, 2)
-        self.angle_bar_layout.setSpacing(4)
-        self.angle_bar.setStyleSheet("background-color: #252525; border-radius: 4px;")
-        self.angle_buttons: List[QPushButton] = []
-        self.multi_view_btn: Optional[QPushButton] = None
-        self.angle_bar.setVisible(False)
-        left_layout.addWidget(self.angle_bar)
 
         # Recording controls (simplified: Arm + Trigger + level meter)
         record_group = QWidget()
@@ -1382,6 +1401,8 @@ class MainWindow(QMainWindow):
                 self.config.cameras.append(new_preset)
                 save_settings(self.config)
                 self._start_camera(new_preset)
+                self.live_visible_cameras.add(new_preset.id)
+                self._rebuild_camera_dropdown()
                 self._set_phone_btn_state("connecting")
                 self._update_camera_status()
             return
@@ -1460,6 +1481,8 @@ class MainWindow(QMainWindow):
         for preset in self.config.cameras:
             self._start_camera(preset)
 
+        self.live_visible_cameras = {p.id for p in self.config.cameras}
+        self._rebuild_camera_dropdown()
         self._update_camera_status()
         self._refresh_phone_btn_state()
 
@@ -1489,6 +1512,9 @@ class MainWindow(QMainWindow):
             # Clean up stale frame references
             self.current_frames.pop(cam_id, None)
             self.camera_fps.pop(cam_id, None)
+            self.live_visible_cameras.discard(cam_id)
+            self._rebuild_camera_dropdown()
+            self._sync_pip_cameras()
 
     def _on_fps_update(self, camera_id, fps: float):
         self.camera_fps[camera_id] = fps
@@ -1604,7 +1630,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_frame_ready(self, camera_id, frame: np.ndarray, timestamp: float):
+        is_new = camera_id not in self.current_frames
         self.current_frames[camera_id] = frame.copy()
+
+        if is_new:
+            # Camera just connected — add to visible set and refresh dropdown
+            self.live_visible_cameras.add(camera_id)
+            self._rebuild_camera_dropdown()
+            self._sync_pip_cameras()
 
         if self.is_armed and camera_id in self.frame_buffers:
             self.frame_buffers[camera_id].add_frame(frame, timestamp)
@@ -1734,17 +1767,35 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _update_display(self):
-        if self.is_playing and self.playback_frames:
+        has_playback = self.playback_frames or (self.playback_multi_view and self.playback_all_frames)
+
+        if self.is_playing and has_playback:
+            # Animated playback
             frame = self._get_playback_frame()
             self.video_player.display_frame(frame)
 
             if self.pip_window and self.pip_window.isVisible():
                 self.pip_window.display_frame(frame)
 
-        elif not self.is_playing:
-            if self.config.primary_camera in self.current_frames:
-                frame = self.current_frames[self.config.primary_camera].copy()
+        elif has_playback:
+            # Paused on a clip — hold the current playback frame
+            frame = self._get_playback_frame()
+            if frame is not None:
+                self.video_player.display_frame(frame)
 
+        else:
+            # Live feed
+            visible_cams = {cid: f.copy() for cid, f in self.current_frames.items()
+                           if cid in self.live_visible_cameras}
+
+            if len(visible_cams) > 1:
+                labels = {}
+                for preset in self.config.cameras:
+                    labels[str(preset.id)] = preset.label or str(preset.id)
+                frame = composite_grid(
+                    {str(k): v for k, v in visible_cams.items()},
+                    labels,
+                )
                 if self.is_recording:
                     cv2.circle(frame, (50, 50), 20, (0, 0, 255), -1)
                     cv2.putText(frame, "REC", (80, 60),
@@ -1753,14 +1804,28 @@ class MainWindow(QMainWindow):
                     cv2.circle(frame, (50, 50), 20, (0, 255, 255), -1)
                     cv2.putText(frame, "ARMED", (80, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
+                self.video_player.display_frame(frame)
+            elif len(visible_cams) == 1:
+                frame = next(iter(visible_cams.values()))
+                if self.is_recording:
+                    cv2.circle(frame, (50, 50), 20, (0, 0, 255), -1)
+                    cv2.putText(frame, "REC", (80, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                elif self.is_armed:
+                    cv2.circle(frame, (50, 50), 20, (0, 255, 255), -1)
+                    cv2.putText(frame, "ARMED", (80, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
                 self.video_player.display_frame(frame)
             elif self.camera_captures:
-                # Show waiting placeholder when cameras are configured but no frames yet
                 placeholder = np.zeros((720, 1280, 3), dtype=np.uint8)
                 cv2.putText(placeholder, "Waiting for camera...", (400, 360),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, (74, 158, 255), 2)
                 self.video_player.display_frame(placeholder)
+
+            # Update PiP with per-camera frames
+            if self.pip_window and self.pip_window.isVisible() and visible_cams:
+                for cid, f in visible_cams.items():
+                    self.pip_window.display_frame(f, camera_id=str(cid))
 
         # Keep drawing overlay sized to video player
         self.drawing_overlay.setGeometry(self.video_player.geometry())
@@ -1958,6 +2023,7 @@ class MainWindow(QMainWindow):
 
             self.play_btn.setChecked(True)
             self._toggle_playback()
+            self._update_live_btn_style()
 
     # ------------------------------------------------------------------
     # Multi-Angle Playback
@@ -2063,11 +2129,34 @@ class MainWindow(QMainWindow):
         if self.pip_window is None:
             self.pip_window = PiPWindow()
             self.pip_window.closed.connect(self._on_pip_closed)
+            self.pip_window.camera_toggled.connect(self._on_pip_camera_toggled)
 
         if self.pip_window.isVisible():
             self.pip_window.hide()
         else:
+            self._sync_pip_cameras()
             self.pip_window.show()
+
+    def _sync_pip_cameras(self):
+        """Push connected camera list and visibility to PiP window."""
+        if not self.pip_window:
+            return
+        connected = [p for p in self.config.cameras if p.id in self.current_frames]
+        cameras = [{"id": p.id, "label": p.label or str(p.id)} for p in connected]
+        self.pip_window.set_cameras(cameras, self.live_visible_cameras)
+
+    def _on_pip_camera_toggled(self, cam_id, checked: bool):
+        """Handle camera toggle from PiP dropdown — sync with main dropdown."""
+        if checked:
+            self.live_visible_cameras.add(cam_id)
+        else:
+            if len(self.live_visible_cameras) <= 1:
+                self._sync_pip_cameras()
+                return
+            self.live_visible_cameras.discard(cam_id)
+        self._update_camera_dropdown_text()
+        self._rebuild_camera_dropdown()
+        self._sync_pip_cameras()
 
     def _on_pip_closed(self):
         pass
@@ -2226,6 +2315,61 @@ class MainWindow(QMainWindow):
         self.play_btn.setText("Play")
         self.angle_bar.setVisible(False)
 
+    def _go_to_live(self):
+        """Return to live camera feed, deselecting any clip."""
+        self._clear_playback()
+        self.gallery.deselect_all()
+        self._update_live_btn_style()
+
+    def _update_live_btn_style(self):
+        """Green when showing live feed, default when a clip is loaded."""
+        has_playback = self.playback_frames or (self.playback_multi_view and self.playback_all_frames)
+        if not has_playback:
+            # Active — showing live feed
+            self.live_btn.setStyleSheet(
+                "QPushButton { background-color: #34d17e; color: white; border: 1px solid #34d17e; "
+                "border-radius: 6px; padding: 6px 14px; font-size: 12px; }"
+                "QPushButton:hover { background-color: #2aba6e; }"
+            )
+        else:
+            # Inactive — a clip is loaded
+            self.live_btn.setStyleSheet("")
+
+    def _rebuild_camera_dropdown(self):
+        """Rebuild the camera dropdown menu from connected cameras only."""
+        self.camera_dropdown_menu.clear()
+        connected = [p for p in self.config.cameras if p.id in self.current_frames]
+        for preset in connected:
+            action = self.camera_dropdown_menu.addAction(preset.label or str(preset.id))
+            action.setCheckable(True)
+            action.setChecked(preset.id in self.live_visible_cameras)
+            action.toggled.connect(lambda checked, pid=preset.id: self._on_camera_visibility_toggled(pid, checked))
+        self._update_camera_dropdown_text()
+
+    def _on_camera_visibility_toggled(self, cam_id, checked: bool):
+        """Toggle a camera's visibility in the live feed."""
+        if checked:
+            self.live_visible_cameras.add(cam_id)
+        else:
+            # Don't allow unchecking all cameras
+            if len(self.live_visible_cameras) <= 1:
+                # Re-check in menu
+                self._rebuild_camera_dropdown()
+                return
+            self.live_visible_cameras.discard(cam_id)
+        self._update_camera_dropdown_text()
+        self._sync_pip_cameras()
+
+    def _update_camera_dropdown_text(self):
+        """Update dropdown button text and visibility based on connected cameras."""
+        connected = [p for p in self.config.cameras if p.id in self.current_frames]
+        total = len(connected)
+        visible = len([c for c in connected if c.id in self.live_visible_cameras])
+        # Hide dropdown when 0-1 connected cameras — no selection needed
+        self.camera_dropdown_btn.setVisible(total > 1)
+        if total > 1:
+            self.camera_dropdown_btn.setText(f"Cameras ({visible}/{total})")
+
     # ------------------------------------------------------------------
     # Detection Tab
     # ------------------------------------------------------------------
@@ -2284,6 +2428,9 @@ class MainWindow(QMainWindow):
             self.config.cameras = new_presets
             self.config.primary_camera = primary
             save_settings(self.config)
+            # Keep visible cameras that still exist, add any newly added ones
+            self.live_visible_cameras = (self.live_visible_cameras & new_ids) | (new_ids - old_ids)
+            self._rebuild_camera_dropdown()
             self._update_camera_status()
             self._refresh_phone_btn_state()
 

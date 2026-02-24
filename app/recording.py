@@ -108,11 +108,19 @@ class RecordingManager:
         if not frames_by_camera:
             return None
 
+        # Filter to cameras that actually have frames
+        active_cameras = {k: v for k, v in frames_by_camera.items() if v}
+        if not active_cameras:
+            return None
+
+        # Fall back to first active camera if primary has no frames
+        effective_primary = primary_camera if primary_camera in active_cameras else next(iter(active_cameras))
+
         shot_name = f"shot_{self.shot_count:04d}"
         clip_info = {
             "file": f"{shot_name}.mp4",
             "timestamp": time.time(),
-            "cameras": len(frames_by_camera),
+            "cameras": len(active_cameras),
             "camera_files": {},
             "camera_labels": camera_labels or {},
         }
@@ -121,7 +129,7 @@ class RecordingManager:
             if not frames:
                 continue
 
-            if cam_id == primary_camera:
+            if cam_id == effective_primary:
                 filename = f"{shot_name}.mp4"
             else:
                 filename = f"{shot_name}_cam{cam_id}.mp4"
@@ -140,7 +148,7 @@ class RecordingManager:
             finally:
                 out.release()
 
-            if cam_id == primary_camera and frames:
+            if cam_id == effective_primary and frames:
                 mid_idx = len(frames) // 3
                 thumb_frame = frames[mid_idx][0]
                 thumb_path = self.session_folder / f"{shot_name}.jpg"
