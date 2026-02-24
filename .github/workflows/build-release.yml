@@ -59,6 +59,10 @@ jobs:
           cache: "pip"
           cache-dependency-path: app/requirements.txt
 
+      - name: Install system dependencies
+        run: |
+          brew install portaudio
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
