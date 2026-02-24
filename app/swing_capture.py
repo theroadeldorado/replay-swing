@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QTabWidget, QLineEdit, QToolBar,
 )
 from PyQt6.QtCore import (
-    Qt, QTimer, pyqtSignal, QSize, QPoint, QRect,
+    Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect,
 )
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QFont, QPen,
@@ -236,6 +236,24 @@ _PRESET_BTN_SS = """
 """
 
 
+class _ConnectionTestThread(QThread):
+    """Background thread for testing network camera connections."""
+
+    result_ready = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, url: str):
+        super().__init__()
+        self._url = url
+
+    def run(self):
+        try:
+            success, message = test_network_camera(self._url)
+            self.result_ready.emit(success, message)
+        except Exception as e:
+            logger.exception("Connection test thread crashed: %s", e)
+            self.result_ready.emit(False, f"Test error: {e}")
+
+
 class NetworkCameraDialog(QDialog):
     """Dialog for adding any network camera (DroidCam, IP Webcam, RTSP, MJPEG, etc.)."""
 
@@ -431,7 +449,7 @@ class NetworkCameraDialog(QDialog):
         return url if url else None
 
     def _test_connection(self):
-        """Test the network camera URL."""
+        """Test the network camera URL in a background thread."""
         url = self._build_url()
         if not url:
             self.status_label.setText("Please enter an IP address or URL.")
@@ -442,10 +460,15 @@ class NetworkCameraDialog(QDialog):
         self.test_btn.setText("Testing...")
         self.status_label.setText(f"Testing {url}...")
         self.status_label.setStyleSheet("color: #f1c40f; font-size: 12px; padding: 4px;")
-        QApplication.processEvents()
 
-        success, message = test_network_camera(url)
+        self._test_url = url
+        self._test_thread = _ConnectionTestThread(url)
+        self._test_thread.result_ready.connect(self._on_test_result)
+        self._test_thread.start()
 
+    def _on_test_result(self, success: bool, message: str):
+        """Handle test result from background thread."""
+        url = self._test_url
         self.test_btn.setEnabled(True)
         self.test_btn.setText("Test Connection")
 

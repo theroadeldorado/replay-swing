@@ -153,14 +153,16 @@ class PiPWindow(QWidget):
     """Floating Picture-in-Picture window with multi-camera support.
 
     Shows one video panel per visible camera, stacked vertically.
-    Each panel is a 16:9 block. The window grows taller as cameras are added.
+    Each panel maintains 16:9 aspect ratio. Window is resizable by dragging edges.
     """
 
     closed = pyqtSignal()
     camera_toggled = pyqtSignal(object, bool)  # (cam_id, checked)
 
-    PANEL_WIDTH = 400
-    PANEL_HEIGHT = 225  # 400 * 9/16
+    TITLE_HEIGHT = 24
+    RESIZE_MARGIN = 6  # pixels from edge to trigger resize
+    MIN_WIDTH = 240
+    MIN_HEIGHT = 170
 
     def __init__(self, parent=None):
         super().__init__(
@@ -172,6 +174,8 @@ class PiPWindow(QWidget):
 
         self.setWindowTitle("Golf Swing - PiP")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMouseTracking(True)
+        self.setMinimumSize(self.MIN_WIDTH, self.MIN_HEIGHT)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -192,7 +196,7 @@ class PiPWindow(QWidget):
 
         # Title bar
         title_bar = QWidget()
-        title_bar.setFixedHeight(24)
+        title_bar.setFixedHeight(self.TITLE_HEIGHT)
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(8, 0, 8, 0)
 
@@ -237,13 +241,17 @@ class PiPWindow(QWidget):
         self._panels_layout = QVBoxLayout(self._panels_widget)
         self._panels_layout.setContentsMargins(0, 0, 0, 0)
         self._panels_layout.setSpacing(2)
-        container_layout.addWidget(self._panels_widget)
+        container_layout.addWidget(self._panels_widget, stretch=1)
 
         layout.addWidget(self.container)
 
         self._drag_pos = None
+        self._resize_edge = None  # which edge(s) are being dragged
+        self._resize_origin = None  # starting geometry for resize
         self._video_panels: Dict[str, QLabel] = {}  # cam_id -> QLabel
         self._visible_cameras: List[str] = []
+
+        self.resize(408, 270)
 
     def set_cameras(self, cameras: List[Dict], visible_ids: set):
         """Rebuild camera menu and video panels.
@@ -261,7 +269,6 @@ class PiPWindow(QWidget):
             )
 
         # Rebuild panels for visible cameras
-        old_ids = set(self._video_panels.keys())
         new_visible = [c for c in cameras if c["id"] in visible_ids]
         new_ids = [str(c["id"]) for c in new_visible]
 
@@ -277,14 +284,13 @@ class PiPWindow(QWidget):
             cid = str(cam["id"])
             if cid not in self._video_panels:
                 panel = QLabel()
-                panel.setFixedSize(self.PANEL_WIDTH, self.PANEL_HEIGHT)
                 panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 panel.setStyleSheet("background-color: #1a1a1a; border-radius: 4px; border: none;")
                 self._panels_layout.addWidget(panel)
                 self._video_panels[cid] = panel
 
         self._visible_cameras = new_ids
-        self._update_size()
+        self._fit_panels()
 
         # Hide dropdown when only 1 camera
         total = len(cameras)
@@ -293,12 +299,12 @@ class PiPWindow(QWidget):
         if total > 1:
             self.camera_btn.setText(f"Cameras ({vis}/{total})")
 
-    def _update_size(self):
-        """Resize window to fit stacked panels."""
-        n = max(1, len(self._video_panels))
-        h = 30 + n * (self.PANEL_HEIGHT + 2) + 8  # title + panels + margins
-        self.setFixedWidth(self.PANEL_WIDTH + 8)
-        self.setFixedHeight(h)
+    def _fit_panels(self):
+        """Set panel heights based on current window width to maintain 16:9."""
+        content_w = self.width() - 8  # container margins
+        panel_h = max(40, int(content_w * 9 / 16))
+        for panel in self._video_panels.values():
+            panel.setFixedHeight(panel_h)
 
     def display_frame(self, frame: np.ndarray, camera_id: str = None):
         """Display a frame. If camera_id given, update that panel only."""
@@ -341,12 +347,11 @@ class PiPWindow(QWidget):
         """Fallback display when no camera panels configured."""
         if not self._video_panels:
             panel = QLabel()
-            panel.setFixedSize(self.PANEL_WIDTH, self.PANEL_HEIGHT)
             panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
             panel.setStyleSheet("background-color: #1a1a1a; border-radius: 4px; border: none;")
             self._panels_layout.addWidget(panel)
             self._video_panels["_default"] = panel
-            self._update_size()
+            self._fit_panels()
         panel = self._video_panels.get("_default") or next(iter(self._video_panels.values()))
         scaled = q_img.scaled(
             panel.size(),
@@ -355,16 +360,101 @@ class PiPWindow(QWidget):
         )
         panel.setPixmap(QPixmap.fromImage(scaled))
 
+    # -- Edge detection for resize --
+
+    def _get_edge(self, pos):
+        """Return edge flags for the given local position."""
+        m = self.RESIZE_MARGIN
+        w, h = self.width(), self.height()
+        x, y = pos.x(), pos.y()
+        edge = 0
+        if x <= m:
+            edge |= 1  # left
+        if x >= w - m:
+            edge |= 2  # right
+        if y <= m:
+            edge |= 4  # top
+        if y >= h - m:
+            edge |= 8  # bottom
+        return edge
+
+    _EDGE_CURSORS = {
+        1: Qt.CursorShape.SizeHorCursor,     # left
+        2: Qt.CursorShape.SizeHorCursor,     # right
+        4: Qt.CursorShape.SizeVerCursor,     # top
+        8: Qt.CursorShape.SizeVerCursor,     # bottom
+        5: Qt.CursorShape.SizeFDiagCursor,   # top-left
+        6: Qt.CursorShape.SizeBDiagCursor,   # top-right
+        9: Qt.CursorShape.SizeBDiagCursor,   # bottom-left
+        10: Qt.CursorShape.SizeFDiagCursor,  # bottom-right
+    }
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.pos()
+            edge = self._get_edge(event.position().toPoint())
+            if edge:
+                self._resize_edge = edge
+                self._resize_origin = (event.globalPosition().toPoint(), self.geometry())
+                self._drag_pos = None
+            else:
+                self._drag_pos = event.globalPosition().toPoint() - self.pos()
+                self._resize_edge = None
 
     def mouseMoveEvent(self, event):
+        if self._resize_edge and self._resize_origin:
+            gpos = event.globalPosition().toPoint()
+            origin_pos, origin_geo = self._resize_origin
+            dx = gpos.x() - origin_pos.x()
+            dy = gpos.y() - origin_pos.y()
+            geo = origin_geo  # QRect
+
+            new_x, new_y = geo.x(), geo.y()
+            new_w, new_h = geo.width(), geo.height()
+
+            if self._resize_edge & 1:  # left
+                new_x = geo.x() + dx
+                new_w = geo.width() - dx
+            if self._resize_edge & 2:  # right
+                new_w = geo.width() + dx
+            if self._resize_edge & 4:  # top
+                new_y = geo.y() + dy
+                new_h = geo.height() - dy
+            if self._resize_edge & 8:  # bottom
+                new_h = geo.height() + dy
+
+            # Enforce minimums
+            if new_w < self.MIN_WIDTH:
+                if self._resize_edge & 1:
+                    new_x = geo.x() + geo.width() - self.MIN_WIDTH
+                new_w = self.MIN_WIDTH
+            if new_h < self.MIN_HEIGHT:
+                if self._resize_edge & 4:
+                    new_y = geo.y() + geo.height() - self.MIN_HEIGHT
+                new_h = self.MIN_HEIGHT
+
+            self.setGeometry(new_x, new_y, new_w, new_h)
+            return
+
         if self._drag_pos is not None:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
+            return
+
+        # Hover: update cursor based on edge proximity
+        edge = self._get_edge(event.position().toPoint())
+        cursor = self._EDGE_CURSORS.get(edge)
+        if cursor:
+            self.setCursor(cursor)
+        else:
+            self.unsetCursor()
 
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
+        self._resize_edge = None
+        self._resize_origin = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_panels()
 
     def closeEvent(self, event):
         self.closed.emit()

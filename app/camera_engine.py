@@ -1,6 +1,9 @@
 """
 Camera capture engine with person detection, network camera support,
 and per-camera transforms (zoom, rotate, flip).
+
+Includes a fallback MJPEG reader (MJPEGCapture) for macOS where
+opencv-python from pip lacks FFMPEG HTTP streaming support.
 """
 
 import logging
@@ -8,6 +11,8 @@ import os
 import socket
 import time
 import threading
+import urllib.request
+import urllib.error
 from typing import Optional, List, Dict, Any
 
 import cv2
@@ -20,6 +25,138 @@ os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 from config import AppConfig, CameraPreset
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Fallback MJPEG HTTP Reader
+# ============================================================================
+
+class MJPEGCapture:
+    """HTTP MJPEG stream reader — fallback when OpenCV's VideoCapture
+    can't open HTTP URLs (common on macOS pip installs).
+
+    Provides a read() interface compatible with cv2.VideoCapture.
+    """
+
+    def __init__(self, url: str, timeout: float = 10.0):
+        self._url = url
+        self._timeout = timeout
+        self._stream = None
+        self._opened = False
+        self._busy = False
+        self._buffer = b""
+        self._open()
+
+    @property
+    def busy(self) -> bool:
+        """True if the camera server reported it's busy (e.g. DroidCam one-client limit)."""
+        return self._busy
+
+    def _open(self):
+        try:
+            req = urllib.request.Request(self._url)
+            self._stream = urllib.request.urlopen(req, timeout=self._timeout)
+            content_type = self._stream.headers.get("Content-Type", "unknown")
+            logger.info("MJPEGCapture: opened %s (Content-Type: %s)", self._url, content_type)
+
+            # DroidCam returns text/html with "Busy" page when another client is connected
+            if "text/html" in content_type:
+                body = self._stream.read(2048).decode("utf-8", errors="replace")
+                if "busy" in body.lower():
+                    logger.warning("MJPEGCapture: DroidCam is busy (another client connected) at %s", self._url)
+                    self._busy = True
+                else:
+                    logger.debug("MJPEGCapture: got HTML instead of video from %s", self._url)
+                self._stream.close()
+                self._stream = None
+                self._opened = False
+                return
+
+            self._opened = True
+            self._busy = False
+        except Exception as e:
+            logger.debug("MJPEGCapture: failed to open %s: %s", self._url, e)
+            self._opened = False
+            self._busy = False
+
+    def isOpened(self) -> bool:
+        return self._opened
+
+    def read(self):
+        """Read one JPEG frame from the MJPEG stream.
+
+        Returns (success, frame) like cv2.VideoCapture.read().
+        """
+        if not self._opened or self._stream is None:
+            return False, None
+
+        try:
+            # Read chunks until we find a complete JPEG (SOI + EOI markers)
+            total_read = 0
+            while True:
+                chunk = self._stream.read(4096)
+                if not chunk:
+                    logger.debug("MJPEGCapture: stream returned empty (read %d bytes total)", total_read)
+                    return False, None
+                total_read += len(chunk)
+                self._buffer += chunk
+
+                if total_read <= 4096:
+                    # Log first chunk to understand content type
+                    logger.debug("MJPEGCapture: first chunk (%d bytes), starts with: %s",
+                                 len(chunk), chunk[:80])
+
+                # Look for JPEG start (FFD8) and end (FFD9)
+                soi = self._buffer.find(b"\xff\xd8")
+                if soi == -1:
+                    # No JPEG start yet, trim buffer
+                    self._buffer = self._buffer[-2:]
+                    continue
+
+                eoi = self._buffer.find(b"\xff\xd9", soi + 2)
+                if eoi == -1:
+                    # Have start but no end yet, keep reading
+                    # Limit buffer to 5MB to prevent memory runaway
+                    if len(self._buffer) > 5 * 1024 * 1024:
+                        logger.debug("MJPEGCapture: buffer overflow (5MB), no complete frame found")
+                        self._buffer = b""
+                    continue
+
+                # Extract the complete JPEG
+                jpeg_data = self._buffer[soi:eoi + 2]
+                self._buffer = self._buffer[eoi + 2:]
+
+                # Decode JPEG to numpy array
+                arr = np.frombuffer(jpeg_data, dtype=np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if frame is not None:
+                    return True, frame
+
+                # Corrupt JPEG, try next frame
+                logger.debug("MJPEGCapture: corrupt JPEG frame (%d bytes), skipping", len(jpeg_data))
+
+        except (urllib.error.URLError, OSError, ConnectionError) as e:
+            logger.debug("MJPEGCapture: stream read error: %s", e)
+            self._opened = False
+            return False, None
+        except Exception as e:
+            logger.debug("MJPEGCapture: unexpected error: %s", e)
+            self._opened = False
+            return False, None
+
+    def set(self, prop_id, value):
+        """No-op for compatibility with cv2.VideoCapture.set()."""
+        pass
+
+    def release(self):
+        if self._stream:
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+        self._opened = False
+        self._buffer = b""
 
 
 # ============================================================================
@@ -187,8 +324,19 @@ class CameraCapture(QThread):
             logger.info("Camera %s stopped (%d frames)", self.camera_id, total_frames)
 
     def _open_usb_camera(self, camera_id):
-        """Try multiple backends to open a USB camera."""
-        for backend_name, backend in [("DSHOW", cv2.CAP_DSHOW), ("MSMF", cv2.CAP_MSMF), ("default", cv2.CAP_ANY)]:
+        """Try multiple backends to open a USB camera.
+
+        On Windows: tries DirectShow, MSMF, then default.
+        On macOS/Linux: skips Windows-only backends, uses default (AVFoundation/V4L2).
+        """
+        import sys
+        if sys.platform == "win32":
+            backends = [("DSHOW", cv2.CAP_DSHOW), ("MSMF", cv2.CAP_MSMF), ("default", cv2.CAP_ANY)]
+        else:
+            backends = [("default", cv2.CAP_ANY)]
+
+        for backend_name, backend in backends:
+            logger.debug("Camera %s: trying %s backend...", camera_id, backend_name)
             cap = cv2.VideoCapture(camera_id, backend)
             ret = False
             try:
@@ -197,7 +345,9 @@ class CameraCapture(QThread):
                     if ret:
                         logger.info("Camera %s: opened with %s", camera_id, backend_name)
                         return cap
-                    logger.debug("Camera %s: %s opened but read failed", camera_id, backend_name)
+                    logger.debug("Camera %s: %s opened but read() failed", camera_id, backend_name)
+                else:
+                    logger.debug("Camera %s: %s backend isOpened()=False", camera_id, backend_name)
             except Exception as e:
                 logger.debug("Camera %s: %s backend exception: %s", camera_id, backend_name, e)
             finally:
@@ -208,25 +358,65 @@ class CameraCapture(QThread):
         return None
 
     def _open_network_camera(self, url):
-        """Try to open a network camera (MJPEG, RTSP, or any URL OpenCV supports)."""
-        for backend_name, backend in [("default", cv2.CAP_ANY), ("FFMPEG", cv2.CAP_FFMPEG)]:
+        """Try to open a network camera (MJPEG, RTSP, or any URL OpenCV supports).
+
+        Uses FFMPEG backend first to avoid AVFoundation conflicts with USB cameras on macOS.
+        Falls back to MJPEGCapture for HTTP URLs when OpenCV backends fail.
+        """
+        # Quick HTTP pre-check for busy/HTML responses
+        if url.startswith("http"):
+            reachable, busy, content_type = _check_http_camera(url)
+            if not reachable:
+                logger.info("Network camera %s: not reachable", url)
+                return None
+            if busy:
+                logger.warning("Network camera %s: DroidCam is busy (another client connected)", url)
+                return None
+            if content_type and "text/html" in content_type:
+                logger.info("Network camera %s: got HTML (not video stream)", url)
+                return None
+
+        # FFMPEG first — avoids AVFoundation probing HTTP URLs which can
+        # deadlock or timeout when a USB camera already holds the session.
+        for backend_name, backend in [("FFMPEG", cv2.CAP_FFMPEG), ("default", cv2.CAP_ANY)]:
+            logger.debug("Network camera %s: trying %s backend...", url, backend_name)
             cap = cv2.VideoCapture(url, backend)
             ret = False
             try:
                 if cap.isOpened():
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    # Set read timeout to 5 seconds to avoid infinite blocking
+                    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
                     ret, _ = cap.read()
                     if ret:
                         logger.info("Network camera opened (%s backend): %s", backend_name, url)
                         return cap
-                    logger.debug("Network camera %s: %s opened but read failed", url, backend_name)
+                    logger.debug("Network camera %s: %s opened but read() returned False", url, backend_name)
+                else:
+                    logger.debug("Network camera %s: %s backend isOpened()=False", url, backend_name)
             except Exception as e:
                 logger.debug("Network camera %s: %s backend exception: %s", url, backend_name, e)
             finally:
                 if not ret:
                     cap.release()
 
-        logger.error("Network camera %s: could not open", url)
+        # Fallback: use our custom MJPEG reader for HTTP URLs
+        # (opencv-python on macOS often lacks FFMPEG HTTP streaming)
+        if url.startswith("http://") or url.startswith("https://"):
+            logger.info("Network camera %s: OpenCV backends failed, trying MJPEGCapture fallback...", url)
+            cap = MJPEGCapture(url, timeout=5.0)
+            if cap.busy:
+                logger.warning("Network camera %s: camera is busy (close other clients first)", url)
+                return None
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    logger.info("Network camera opened (MJPEGCapture fallback): %s", url)
+                    return cap
+                logger.debug("Network camera %s: MJPEGCapture opened but read() failed", url)
+            cap.release()
+
+        logger.error("Network camera %s: could not open with any backend", url)
         return None
 
     def _reconnect_loop(self):
@@ -381,14 +571,51 @@ def test_droidcam_connection(ip: str) -> tuple:
     return success, message, url
 
 
+def _check_http_camera(url: str, timeout: float = 3.0) -> tuple:
+    """Quick HTTP pre-check for a camera URL.
+
+    Returns (reachable: bool, busy: bool, content_type: str|None).
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host, port = parsed.hostname, parsed.port or 80
+
+    # TCP check
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        if result != 0:
+            return False, False, None
+    except Exception:
+        return False, False, None
+
+    # HTTP check — detect content type and busy page
+    try:
+        resp = urllib.request.urlopen(url, timeout=timeout)
+        ct = resp.headers.get("Content-Type", "")
+        if "text/html" in ct:
+            body = resp.read(2048).decode("utf-8", errors="replace")
+            resp.close()
+            if "busy" in body.lower():
+                return True, True, ct
+            return True, False, ct
+        resp.close()
+        return True, False, ct
+    except Exception:
+        # TCP connected but HTTP failed — might be RTSP or non-HTTP protocol
+        return True, False, None
+
+
 def test_network_camera(url: str) -> tuple:
-    """Test if a URL serves video frames OpenCV can read.
+    """Test if a URL serves video frames.
 
-    For DroidCam URLs on port 4747, also tries alternate endpoint paths
-    since iOS uses /video while Android uses /mjpegfeed.
+    For DroidCam URLs on port 4747, tries both /video and /mjpegfeed.
+    Fast-fails on busy or unreachable cameras.
+    Falls back to MJPEGCapture when OpenCV backends don't support HTTP.
 
-    Returns (success: bool, message: str).  On success with an alternate
-    URL, the message includes the working URL.
+    Returns (success: bool, message: str).
     """
     urls_to_try = [url]
 
@@ -401,33 +628,59 @@ def test_network_camera(url: str) -> tuple:
             urls_to_try.append(url.rsplit("/", 1)[0] + "/mjpegfeed")
 
     for try_url in urls_to_try:
-        logger.info("Testing network camera at %s", try_url)
-        try:
-            # Try default backend
-            cap = cv2.VideoCapture(try_url)
-            try:
-                if cap.isOpened():
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        h, w = frame.shape[:2]
-                        suffix = f" (via {try_url})" if try_url != url else ""
-                        return True, f"Connected! Receiving {w}x{h} video{suffix}"
-            finally:
-                cap.release()
+        # Quick HTTP pre-check: reachable? busy? content type?
+        reachable, busy, content_type = _check_http_camera(try_url)
 
-            # Try FFMPEG backend as fallback
-            cap = cv2.VideoCapture(try_url, cv2.CAP_FFMPEG)
+        if not reachable:
+            logger.info("Camera at %s: not reachable", try_url)
+            continue
+
+        if busy:
+            logger.warning("Camera at %s: DroidCam reports busy", try_url)
+            return False, "DroidCam is busy — close other apps connected to it, then try again"
+
+        if content_type and "text/html" in content_type:
+            logger.info("Camera at %s: got HTML response (not a video stream), skipping", try_url)
+            continue
+
+        logger.info("Camera at %s reachable (Content-Type: %s), testing video...", try_url, content_type)
+
+        # Try OpenCV backends (FFMPEG first to avoid AVFoundation conflicts on macOS)
+        for backend_name, backend in [("FFMPEG", cv2.CAP_FFMPEG), ("default", cv2.CAP_ANY)]:
+            logger.info("Testing camera at %s (%s backend)", try_url, backend_name)
             try:
+                cap = cv2.VideoCapture(try_url, backend)
+                try:
+                    if cap.isOpened():
+                        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+                        ret, frame = cap.read()
+                        if ret and frame is not None:
+                            h, w = frame.shape[:2]
+                            suffix = f" (via {try_url})" if try_url != url else ""
+                            return True, f"Connected! Receiving {w}x{h} video{suffix}"
+                        logger.debug("Camera at %s (%s): opened but read() failed", try_url, backend_name)
+                    else:
+                        logger.debug("Camera at %s (%s): isOpened()=False", try_url, backend_name)
+                finally:
+                    cap.release()
+            except Exception as e:
+                logger.debug("Test failed for %s (%s): %s", try_url, backend_name, e)
+
+        # Fallback: MJPEGCapture for HTTP URLs (macOS pip OpenCV lacks FFMPEG HTTP)
+        if try_url.startswith("http"):
+            logger.info("Testing camera at %s (MJPEGCapture fallback)", try_url)
+            try:
+                cap = MJPEGCapture(try_url, timeout=5.0)
                 if cap.isOpened():
                     ret, frame = cap.read()
                     if ret and frame is not None:
                         h, w = frame.shape[:2]
                         suffix = f" (via {try_url})" if try_url != url else ""
-                        return True, f"Connected! Receiving {w}x{h} video (FFMPEG){suffix}"
-            finally:
+                        cap.release()
+                        return True, f"Connected! Receiving {w}x{h} video{suffix}"
                 cap.release()
-        except Exception as e:
-            logger.debug("Test failed for %s: %s", try_url, e)
+            except Exception as e:
+                logger.debug("MJPEGCapture test failed for %s: %s", try_url, e)
 
     return False, f"Could not connect to {url}"
 

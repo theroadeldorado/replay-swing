@@ -11,7 +11,17 @@ python swing_capture.py
 
 PyAudio requires special installation on Windows (`pipwin install pyaudio` or manual wheel). Optional dependencies (PyAudio, scikit-learn, qrcode) degrade gracefully — features are disabled at runtime via `AUDIO_AVAILABLE` / `SKLEARN_AVAILABLE` flags.
 
-There is no test suite, linter configuration, or build system. The app is run directly as a Python script.
+There is no linter configuration or build system. The app is run directly as a Python script.
+
+## Running Tests
+
+```bash
+python -m pytest tests/ -v                    # All tests
+python -m pytest tests/test_config.py -v     # Single file
+python -m pytest tests/ -v -k "camera"       # Pattern match
+```
+
+Tests are in `tests/` with shared fixtures in `conftest.py` (app_config, recording_manager, sample_frames). A mock MJPEG server (`mock_camera_server.py`) supports network camera tests without hardware.
 
 ## Architecture
 
