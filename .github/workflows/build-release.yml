@@ -77,12 +77,12 @@ jobs:
 
       - name: Build application
         run: |
-          pyinstaller --onefile --windowed --name "ReplaySwing" --icon NONE swing_capture.py
+          pyinstaller --onedir --windowed --name "ReplaySwing" swing_capture.py
 
       - name: Package .dmg
         run: |
           mkdir -p dmg_contents
-          cp dist/ReplaySwing dmg_contents/
+          cp -R dist/ReplaySwing.app dmg_contents/
           hdiutil create -volname "ReplaySwing" -srcfolder dmg_contents -ov -format UDZO ReplaySwing.dmg
 
       - name: Upload .dmg to release
