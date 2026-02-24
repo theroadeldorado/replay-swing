@@ -1,10 +1,15 @@
-export interface ReleaseInfo {
-  version: string;
+export interface AssetInfo {
   downloadUrl: string;
   fileName: string;
   fileSize: number;
+}
+
+export interface ReleaseInfo {
+  version: string;
   publishedAt: string;
   htmlUrl: string;
+  windows: AssetInfo | null;
+  mac: AssetInfo | null;
 }
 
 export async function getLatestRelease(): Promise<ReleaseInfo | null> {
@@ -28,19 +33,26 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
 
     const releases = await res.json();
 
-    // Find the first release with an .exe asset
+    // Find the first release with a platform asset
     for (const release of releases) {
       const exeAsset = release.assets?.find(
         (a: { name: string }) => a.name.endsWith('.exe')
       );
-      if (exeAsset) {
+      const dmgAsset = release.assets?.find(
+        (a: { name: string }) => a.name.endsWith('.dmg')
+      );
+      if (exeAsset || dmgAsset) {
+        const toAssetInfo = (a: { browser_download_url: string; name: string; size: number }): AssetInfo => ({
+          downloadUrl: a.browser_download_url,
+          fileName: a.name,
+          fileSize: a.size,
+        });
         return {
           version: release.tag_name,
-          downloadUrl: exeAsset.browser_download_url,
-          fileName: exeAsset.name,
-          fileSize: exeAsset.size,
           publishedAt: release.published_at,
           htmlUrl: release.html_url,
+          windows: exeAsset ? toAssetInfo(exeAsset) : null,
+          mac: dmgAsset ? toAssetInfo(dmgAsset) : null,
         };
       }
     }

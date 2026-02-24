@@ -21,7 +21,7 @@ export default function Hero() {
               <span className="text-gold">Improve Every Shot.</span>
             </h1>
             <p className="mt-6 text-lg md:text-xl text-bronze max-w-lg leading-relaxed">
-              A free, open-source Windows app that automatically captures your golf swing on impact
+              A free, open-source app for Windows and macOS that automatically captures your golf swing on impact
               and replays it instantly — right on top of your simulator.
             </p>
             <div className="mt-8 flex flex-wrap gap-4">
