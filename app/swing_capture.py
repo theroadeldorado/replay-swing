@@ -42,13 +42,17 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QFont, QPen,
     QIcon, QAction, QPalette, QCursor, QShortcut, QKeySequence,
+    QDesktopServices,
 )
+from PyQt6.QtCore import QUrl
 
 # Local imports
+from version import __version__
 from config import (
     AppConfig, CameraPreset, load_settings, save_settings,
     SETTINGS_FILE, TRAINING_DATA_DIR, LOG_DIR,
 )
+from updater import UpdateChecker, UpdateBanner, _load_update_state, _save_update_state
 from audio_engine import AudioDetector, AudioClassifier, enumerate_audio_devices, find_virtual_mic, AUDIO_AVAILABLE
 from camera_engine import CameraCapture, PersonDetector, DroidCamScanner, test_droidcam_connection, test_network_camera, droidcam_url
 from recording import RecordingManager, FrameBuffer
@@ -864,14 +868,18 @@ class MainWindow(QMainWindow):
         self._start_cameras()
         self._load_existing_clips()
 
-        logger.info("ReplaySwing started (session: %s)", self.config.session_folder)
+        self._update_checker = None
+        self._update_banner = None
+        QTimer.singleShot(3000, self._check_for_updates)
+
+        logger.info("ReplaySwing v%s started (session: %s)", __version__, self.config.session_folder)
 
     # ------------------------------------------------------------------
     # UI Setup
     # ------------------------------------------------------------------
 
     def _setup_ui(self):
-        self.setWindowTitle("ReplaySwing")
+        self.setWindowTitle(f"ReplaySwing v{__version__}")
         self.setMinimumSize(1200, 800)
 
         if self.config.window_geometry:
@@ -929,7 +937,7 @@ class MainWindow(QMainWindow):
 
         # Left panel
         left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
+        self.left_layout = left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(6)
 
         # Drawing toolbar
@@ -2491,6 +2499,38 @@ class MainWindow(QMainWindow):
 
             self.statusBar().showMessage(f"Session: {self.config.session_folder}")
             logger.info("New session started: %s", self.config.session_folder)
+
+    # ------------------------------------------------------------------
+    # Auto-Update
+    # ------------------------------------------------------------------
+
+    def _check_for_updates(self):
+        self._update_checker = UpdateChecker()
+        self._update_checker.update_available.connect(self._show_update_banner)
+        self._update_checker.start()
+
+    def _show_update_banner(self, version: str, download_url: str, release_url: str, file_size: int):
+        if self._update_banner is not None:
+            return
+        self._update_banner = UpdateBanner(version, download_url, file_size, parent=self)
+        self._update_banner.download_clicked.connect(self._on_update_download)
+        self._update_banner.skipped.connect(self._on_update_skipped)
+        self._update_banner.dismissed.connect(self._on_update_dismissed)
+        self.left_layout.insertWidget(0, self._update_banner)
+
+    def _on_update_download(self, url: str):
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _on_update_skipped(self, version: str):
+        state = _load_update_state()
+        state["skipped_version"] = version
+        _save_update_state(state)
+        if self._update_banner:
+            self._update_banner.setVisible(False)
+
+    def _on_update_dismissed(self):
+        if self._update_banner:
+            self._update_banner.setVisible(False)
 
     # ------------------------------------------------------------------
     # Cleanup

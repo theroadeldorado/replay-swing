@@ -29,6 +29,11 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Stamp version
+        run: |
+          $ver = "${{ github.event.release.tag_name }}" -replace '^v',''
+          Set-Content -Path version.py -Value "__version__ = `"$ver`""
+
       - name: Build executable
         run: |
           pyinstaller --onefile --windowed --name "ReplaySwing" --icon NONE swing_capture.py
