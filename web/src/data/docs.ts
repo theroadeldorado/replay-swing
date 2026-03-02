@@ -13,7 +13,7 @@ export const docSections: DocSection[] = [
     content: `
       <h3>Prerequisites</h3>
       <ul>
-        <li><strong>Windows 10 or 11</strong> (macOS &amp; Linux coming soon)</li>
+        <li><strong>Windows 10 or 11</strong></li>
         <li>A USB webcam <em>or</em> a phone running a camera app (DroidCam, IP Webcam, EpocCam)</li>
         <li>A microphone (built-in laptop mic, USB mic, or phone mic via DroidCam)</li>
       </ul>

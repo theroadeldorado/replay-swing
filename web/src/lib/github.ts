@@ -9,7 +9,6 @@ export interface ReleaseInfo {
   publishedAt: string;
   htmlUrl: string;
   windows: AssetInfo | null;
-  mac: AssetInfo | null;
 }
 
 export async function getLatestRelease(): Promise<ReleaseInfo | null> {
@@ -38,10 +37,7 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
       const exeAsset = release.assets?.find(
         (a: { name: string }) => a.name.endsWith('.exe')
       );
-      const dmgAsset = release.assets?.find(
-        (a: { name: string }) => a.name.endsWith('.dmg')
-      );
-      if (exeAsset || dmgAsset) {
+      if (exeAsset) {
         const toAssetInfo = (a: { browser_download_url: string; name: string; size: number }): AssetInfo => ({
           downloadUrl: a.browser_download_url,
           fileName: a.name,
@@ -51,8 +47,7 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
           version: release.tag_name,
           publishedAt: release.published_at,
           htmlUrl: release.html_url,
-          windows: exeAsset ? toAssetInfo(exeAsset) : null,
-          mac: dmgAsset ? toAssetInfo(dmgAsset) : null,
+          windows: toAssetInfo(exeAsset),
         };
       }
     }
