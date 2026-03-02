@@ -218,7 +218,8 @@ export const docSections: DocSection[] = [
         <tbody>
           <tr><td>Move</td><td>Drag anywhere on the window</td></tr>
           <tr><td>Resize</td><td>Drag the window edges or corners</td></tr>
-          <tr><td>Close</td><td>Click the <strong>&times;</strong> button or press <kbd>P</kbd> again</td></tr>
+          <tr><td>Zoom</td><td>Scroll wheel to zoom in (up to 5&times;) or out &mdash; center-crops the frame</td></tr>
+          <tr><td>Close</td><td>Click the &times; button or press <kbd>P</kbd> again</td></tr>
         </tbody>
       </table>
 
@@ -226,6 +227,7 @@ export const docSections: DocSection[] = [
       <ul>
         <li>Plays the same clip as the main window, at the same speed.</li>
         <li>Loops automatically alongside the main player.</li>
+        <li><strong>Drawing overlays</strong> (lines, circles) are rendered directly on the PiP video so annotations are always visible.</li>
         <li>Position and size are saved to settings and restored on next launch.</li>
         <li>Works with any simulator: GSPro, TGC 2019, E6 Connect, Awesome Golf, etc.</li>
       </ul>
@@ -315,6 +317,12 @@ export const docSections: DocSection[] = [
     └── ...</code></pre>
       <p>A new session folder is created automatically when the app launches. Click <strong>New Session</strong> to start a fresh folder mid-session.</p>
 
+      <h3>Session Browser</h3>
+      <p>The <strong>Sessions</strong> panel in the right sidebar lists all past sessions sorted newest-first, showing the date and shot count for each. Click any session to switch to it instantly &mdash; the gallery reloads with that session&rsquo;s clips.</p>
+
+      <h3>Configurable Save Location</h3>
+      <p>By default, sessions are saved to <code>~/GolfSwings/</code>. To change this, go to <strong>Settings &rarr; Save Location</strong> and click <strong>Change...</strong> to pick a new folder. A new session is started automatically at the new location.</p>
+
       <h3>Clip Gallery</h3>
       <p>The <strong>Gallery</strong> tab shows thumbnail previews of every clip in the current session. Click a thumbnail to load the clip for playback.</p>
 
@@ -322,6 +330,8 @@ export const docSections: DocSection[] = [
       <table>
         <thead><tr><th>Action</th><th>Description</th></tr></thead>
         <tbody>
+          <tr><td>Pin Shot</td><td>Mark a clip as a favorite &mdash; a gold star appears on the thumbnail</td></tr>
+          <tr><td>Share to Phone</td><td>Generate a QR code to download the clip on your phone</td></tr>
           <tr><td>Delete</td><td>Remove the clip and all associated files (with confirmation dialog)</td></tr>
           <tr><td>Mark Not Shot</td><td>Deletes the video but keeps the audio sample for classifier training</td></tr>
           <tr><td>Open Folder</td><td>Opens the session directory in Windows Explorer</td></tr>
@@ -331,6 +341,48 @@ export const docSections: DocSection[] = [
       <h3>Thumbnails</h3>
       <p>Thumbnails are auto-generated from approximately one-third through each clip, giving a representative frame of the swing. They are saved as <code>shot_NNNN.jpg</code> alongside the video.</p>
     `,
+  },
+  {
+    id: 'pin-favorite',
+    title: 'Pin / Favorite Shots',
+    iconName: 'Star',
+    content: \`
+      <h3>Pinning Clips</h3>
+      <p>Right-click any clip thumbnail in the Gallery and select <strong>Pin Shot</strong> to mark it as a favorite. A gold star (\u2605) appears on the thumbnail and in the clip label.</p>
+
+      <h3>Using Pinned Clips</h3>
+      <ul>
+        <li><strong>Comparison view:</strong> When you open the Swing Comparison dialog, pinned clips are automatically pre-selected in the left and right dropdowns &mdash; no scrolling through dozens of shots.</li>
+        <li><strong>Quick identification:</strong> Pinned clips show a star prefix in all dropdown selectors.</li>
+      </ul>
+
+      <h3>Unpinning</h3>
+      <p>Right-click the pinned thumbnail again and select <strong>Unpin Shot</strong>. The pin state is saved in <code>clips.json</code> and persists across sessions.</p>
+    \`,
+  },
+  {
+    id: 'qr-share',
+    title: 'Share to Phone',
+    iconName: 'QrCode',
+    content: \`
+      <h3>Overview</h3>
+      <p>Share any recorded clip directly to your phone without cables, cloud uploads, or third-party apps. The app starts a temporary local web server and generates a QR code that your phone can scan to download the MP4.</p>
+
+      <h3>How to Share</h3>
+      <ol>
+        <li>Right-click a clip thumbnail and select <strong>Share to Phone</strong>, or click the <strong>Share</strong> button in the playback controls.</li>
+        <li>A dialog appears with a QR code and the local URL.</li>
+        <li>Open your phone&rsquo;s camera and scan the QR code (make sure your phone is on the same WiFi network).</li>
+        <li>The video downloads directly to your phone.</li>
+        <li>Close the dialog when done &mdash; the temporary server stops automatically.</li>
+      </ol>
+
+      <h3>Requirements</h3>
+      <ul>
+        <li>Your phone and PC must be on the <strong>same WiFi network</strong>.</li>
+        <li>The <code>qrcode</code> Python package must be installed (included in the default installer). If missing, the URL is still shown as copyable text.</li>
+      </ul>
+    \`,
   },
   {
     id: 'keyboard-shortcuts',
@@ -399,14 +451,17 @@ export const docSections: DocSection[] = [
         </tbody>
       </table>
 
+      <h3>Save Location</h3>
+      <p>The <strong>Save Location</strong> setting lets you choose where all sessions, training data, and logs are stored. The default is <code>~/GolfSwings/</code>. Click <strong>Change...</strong> to pick a different folder (e.g., an external drive).</p>
+
       <h3>File Locations</h3>
       <table>
         <thead><tr><th>Path</th><th>Contents</th></tr></thead>
         <tbody>
-          <tr><td><code>~/GolfSwings/settings.json</code></td><td>All configuration</td></tr>
-          <tr><td><code>~/GolfSwings/&lt;timestamp&gt;/</code></td><td>Session recordings</td></tr>
-          <tr><td><code>~/GolfSwings/training_data/</code></td><td>Audio samples for classifier</td></tr>
-          <tr><td><code>~/GolfSwings/logs/</code></td><td>Rotating log files (5 MB &times; 5 backups)</td></tr>
+          <tr><td><code>~/GolfSwings/settings.json</code></td><td>All configuration (always in default location)</td></tr>
+          <tr><td><code>&lt;save_location&gt;/&lt;timestamp&gt;/</code></td><td>Session recordings</td></tr>
+          <tr><td><code>&lt;save_location&gt;/training_data/</code></td><td>Audio samples for classifier</td></tr>
+          <tr><td><code>&lt;save_location&gt;/logs/</code></td><td>Rotating log files (5 MB &times; 5 backups)</td></tr>
         </tbody>
       </table>
     `,

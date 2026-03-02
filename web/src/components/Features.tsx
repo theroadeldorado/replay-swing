@@ -9,6 +9,8 @@ import {
   BrainCircuit,
   FolderOpen,
   Heart,
+  Star,
+  QrCode,
 } from 'lucide-react';
 
 const features = [
@@ -22,7 +24,7 @@ const features = [
     icon: PictureInPicture2,
     title: 'Picture-in-Picture Overlay',
     description:
-      'Drag a floating replay window on top of your golf simulator. No alt-tabbing, no interruption.',
+      'Drag a floating replay window on top of your simulator. Scroll to zoom in up to 5x. Drawing annotations show on PiP too.',
   },
   {
     icon: Smartphone,
@@ -64,7 +66,19 @@ const features = [
     icon: FolderOpen,
     title: 'Session Management',
     description:
-      'Organized shot gallery with thumbnails. Browse, replay, and manage recordings from every session.',
+      'Browse past sessions, switch between them instantly, and choose where recordings are saved.',
+  },
+  {
+    icon: Star,
+    title: 'Pin Favorite Shots',
+    description:
+      'Pin your best swings for quick access. Pinned shots are auto-selected in the comparison view.',
+  },
+  {
+    icon: QrCode,
+    title: 'Share to Phone',
+    description:
+      'Generate a QR code to send any clip directly to your phone over WiFi — no cables or cloud upload needed.',
   },
   {
     icon: Heart,
