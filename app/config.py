@@ -66,6 +66,9 @@ class AppConfig:
     audio_chunk_size: int = 1024
     audio_device_index: Optional[int] = None
 
+    # Storage settings
+    base_dir: str = ""  # empty = default ~/GolfSwings
+
     # Session settings
     session_folder: str = ""
 
@@ -86,12 +89,25 @@ class AppConfig:
     # Drawing overlays
     drawing_overlays: List[dict] = field(default_factory=list)
 
+    @property
+    def resolved_base_dir(self) -> Path:
+        """Return the base directory, defaulting to ~/GolfSwings."""
+        return Path(self.base_dir) if self.base_dir else Path.home() / "GolfSwings"
+
+    @property
+    def training_data_dir(self) -> Path:
+        return self.resolved_base_dir / "training_data"
+
+    @property
+    def log_dir(self) -> Path:
+        return self.resolved_base_dir / "logs"
+
     def __post_init__(self):
         if not self.session_folder:
-            base_dir = Path.home() / "GolfSwings"
-            base_dir.mkdir(exist_ok=True)
+            base = self.resolved_base_dir
+            base.mkdir(parents=True, exist_ok=True)
             session_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            self.session_folder = str(base_dir / session_name)
+            self.session_folder = str(base / session_name)
         self._validate()
 
     def _validate(self):
@@ -117,6 +133,7 @@ class AppConfig:
 
     def to_dict(self) -> dict:
         return {
+            "base_dir": self.base_dir,
             "cameras": [c.to_dict() for c in self.cameras],
             "primary_camera": self.primary_camera,
             "audio_threshold": self.audio_threshold,
@@ -131,6 +148,8 @@ class AppConfig:
 
     def update_from_dict(self, data: dict):
         """Load settings from a dict (from JSON)."""
+        if "base_dir" in data:
+            self.base_dir = data["base_dir"] or ""
         if "cameras" in data:
             self.cameras = [CameraPreset.from_dict(c) for c in data["cameras"]]
         if "primary_camera" in data:

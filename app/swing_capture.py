@@ -60,7 +60,7 @@ from drawing_overlay import DrawingOverlay, LineShape, CircleShape
 from comparison_view import ComparisonWindow
 from ui_components import (
     VideoPlayer, PiPWindow, ThumbnailWidget, ClipGallery,
-    QTextEditLogHandler, LogPanel, composite_grid,
+    QTextEditLogHandler, LogPanel, composite_grid, SessionListWidget,
 )
 
 
@@ -149,6 +149,135 @@ def _make_qr_pixmap(data: str, size: int = 180) -> Optional[QPixmap]:
         return pixmap
     except Exception:
         return None
+
+
+# ============================================================================
+# Clip Share Server (QR code share to phone)
+# ============================================================================
+
+import http.server
+import socket
+import threading as _threading
+
+
+class _ClipShareHandler(http.server.BaseHTTPRequestHandler):
+    """Serves a single MP4 file."""
+
+    clip_path = None  # set before server starts
+
+    def do_GET(self):
+        if self.clip_path and Path(self.clip_path).exists():
+            data = Path(self.clip_path).read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Disposition", f'attachment; filename="{Path(self.clip_path).name}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_error(404)
+
+    def log_message(self, format, *args):
+        pass  # suppress console output
+
+
+class ClipShareServer:
+    """HTTP server that serves a single clip on a random port."""
+
+    def __init__(self, clip_path: str):
+        self.clip_path = clip_path
+        self._server = None
+        self._thread = None
+        self._port = 0
+        self._ip = self._get_local_ip()
+
+    @staticmethod
+    def _get_local_ip() -> str:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
+    @property
+    def url(self) -> str:
+        return f"http://{self._ip}:{self._port}/clip.mp4"
+
+    def start(self):
+        handler = type("Handler", (_ClipShareHandler,), {"clip_path": self.clip_path})
+        self._server = http.server.HTTPServer(("0.0.0.0", 0), handler)
+        self._port = self._server.server_address[1]
+        self._thread = _threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
+            self._server = None
+
+
+class ShareDialog(QDialog):
+    """QR code dialog for sharing a clip to a phone."""
+
+    def __init__(self, clip_path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Share to Phone")
+        self.setFixedSize(320, 400)
+        self.setStyleSheet("""
+            QDialog { background-color: #1e1e1e; }
+            QLabel { color: #ccc; }
+        """)
+
+        self._server = ClipShareServer(clip_path)
+        self._server.start()
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        title = QLabel("Scan to download clip")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #fff;")
+        layout.addWidget(title)
+
+        qr_label = QLabel()
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pixmap = _make_qr_pixmap(self._server.url, 200)
+        if pixmap:
+            qr_label.setPixmap(pixmap)
+        else:
+            qr_label.setText("QR code library not installed.\npip install qrcode")
+            qr_label.setStyleSheet("color: #e74c3c;")
+        layout.addWidget(qr_label)
+
+        url_label = QLabel(self._server.url)
+        url_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        url_label.setStyleSheet("color: #4a9eff; font-size: 11px;")
+        layout.addWidget(url_label)
+
+        hint = QLabel("Phone must be on the same WiFi network")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(hint)
+
+        close_btn = QPushButton("Done")
+        close_btn.setStyleSheet(
+            "background-color: #4a9eff; color: white; border: none; "
+            "border-radius: 6px; padding: 8px; font-weight: bold;"
+        )
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+    def closeEvent(self, event):
+        self._server.stop()
+        super().closeEvent(event)
+
+    def accept(self):
+        self._server.stop()
+        super().accept()
 
 
 # ============================================================================
@@ -871,6 +1000,7 @@ class MainWindow(QMainWindow):
         self._setup_shortcuts()
         self._start_cameras()
         self._load_existing_clips()
+        self._refresh_session_list()
 
         self._update_checker = None
         self._update_banner = None
@@ -1119,6 +1249,10 @@ class MainWindow(QMainWindow):
         self.compare_btn.clicked.connect(self._open_comparison)
         playback_layout.addWidget(self.compare_btn)
 
+        self.share_btn = QPushButton("Share")
+        self.share_btn.clicked.connect(self._on_share_btn_clicked)
+        playback_layout.addWidget(self.share_btn)
+
         left_layout.addWidget(playback_group)
 
         # Recording controls (simplified: Arm + Trigger + level meter)
@@ -1175,6 +1309,12 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setSpacing(8)
 
+        # Session browser
+        self.session_list = SessionListWidget()
+        self.session_list.session_selected.connect(self._on_session_selected)
+        self.session_list.new_session_requested.connect(self._new_session)
+        right_layout.addWidget(self.session_list)
+
         self.right_tabs = QTabWidget()
 
         # Tab 1: Shots (simplified - just the gallery)
@@ -1185,6 +1325,8 @@ class MainWindow(QMainWindow):
         self.gallery.clip_selected.connect(self._on_clip_selected)
         self.gallery.clip_deleted.connect(self._on_clip_delete_requested)
         self.gallery.clip_mark_not_shot.connect(self._on_mark_not_shot_requested)
+        self.gallery.clip_pin_toggled.connect(self._on_clip_pin_toggled)
+        self.gallery.clip_share_requested.connect(self._on_clip_share_requested)
         shots_layout.addWidget(self.gallery, stretch=1)
 
         self.right_tabs.addTab(shots_tab, "Shots")
@@ -1314,6 +1456,18 @@ class MainWindow(QMainWindow):
         # Session group
         session_group = QGroupBox("Session")
         session_group_layout = QVBoxLayout(session_group)
+
+        save_loc_row = QHBoxLayout()
+        save_loc_row.addWidget(QLabel("Save Location:"))
+        self.save_loc_label = QLabel(str(self.config.resolved_base_dir))
+        self.save_loc_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.save_loc_label.setWordWrap(True)
+        save_loc_row.addWidget(self.save_loc_label, stretch=1)
+        change_loc_btn = QPushButton("Change...")
+        change_loc_btn.setFixedWidth(80)
+        change_loc_btn.clicked.connect(self._change_save_location)
+        save_loc_row.addWidget(change_loc_btn)
+        session_group_layout.addLayout(save_loc_row)
 
         self.open_folder_btn = QPushButton("Open Folder")
         self.open_folder_btn.clicked.connect(self._open_session_folder)
@@ -1801,6 +1955,29 @@ class MainWindow(QMainWindow):
     # Display
     # ------------------------------------------------------------------
 
+    def _render_drawings_on_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Burn drawing overlay shapes onto a frame copy for PiP."""
+        shapes = self.drawing_overlay.shapes
+        if not shapes:
+            return frame
+        out = frame.copy()
+        h, w = out.shape[:2]
+        for shape in shapes:
+            color_hex = shape.color.lstrip("#")
+            r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
+            bgr = (b, g, r)
+            t = max(1, shape.thickness)
+            if hasattr(shape, "x1"):  # LineShape
+                rx1, ry1, rx2, ry2 = shape._get_rotated_points()
+                pt1 = (int(rx1 * w), int(ry1 * h))
+                pt2 = (int(rx2 * w), int(ry2 * h))
+                cv2.line(out, pt1, pt2, bgr, t, cv2.LINE_AA)
+            elif hasattr(shape, "cx"):  # CircleShape
+                center = (int(shape.cx * w), int(shape.cy * h))
+                radius = int(shape.radius * max(w, h))
+                cv2.circle(out, center, radius, bgr, t, cv2.LINE_AA)
+        return out
+
     def _update_display(self):
         has_playback = self.playback_frames or (self.playback_multi_view and self.playback_all_frames)
 
@@ -1810,13 +1987,15 @@ class MainWindow(QMainWindow):
             self.video_player.display_frame(frame)
 
             if self.pip_window and self.pip_window.isVisible():
-                self.pip_window.display_frame(frame)
+                self.pip_window.display_frame(self._render_drawings_on_frame(frame))
 
         elif has_playback:
             # Paused on a clip — hold the current playback frame
             frame = self._get_playback_frame()
             if frame is not None:
                 self.video_player.display_frame(frame)
+                if self.pip_window and self.pip_window.isVisible():
+                    self.pip_window.display_frame(self._render_drawings_on_frame(frame))
 
         else:
             # Live feed
@@ -1857,10 +2036,12 @@ class MainWindow(QMainWindow):
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, (74, 158, 255), 2)
                 self.video_player.display_frame(placeholder)
 
-            # Update PiP with per-camera frames
+            # Update PiP with per-camera frames (with drawings burned in)
             if self.pip_window and self.pip_window.isVisible() and visible_cams:
                 for cid, f in visible_cams.items():
-                    self.pip_window.display_frame(f, camera_id=str(cid))
+                    self.pip_window.display_frame(
+                        self._render_drawings_on_frame(f), camera_id=str(cid)
+                    )
 
         # Keep drawing overlay sized to video player
         self.drawing_overlay.setGeometry(self.video_player.geometry())
@@ -2485,24 +2666,72 @@ class MainWindow(QMainWindow):
             logger.error("Failed to open session folder: %s", e)
 
     def _new_session(self):
-        reply = QMessageBox.question(
-            self, "New Session",
-            "Start a new session? Current session will be saved.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        base_dir = self.config.resolved_base_dir
+        base_dir.mkdir(parents=True, exist_ok=True)
+        session_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.config.session_folder = str(base_dir / session_name)
+        self.recording_manager = RecordingManager(self.config)
+
+        self.gallery.refresh([], Path(self.recording_manager.session_folder))
+        self._clear_playback()
+        self._refresh_session_list()
+
+        self.statusBar().showMessage(f"Session: {self.config.session_folder}")
+        logger.info("New session started: %s", self.config.session_folder)
+
+    def _refresh_session_list(self):
+        """Refresh the session browser list."""
+        self.session_list.scan_sessions(self.config.resolved_base_dir)
+        self.session_list.select_session(self.config.session_folder)
+
+    def _on_session_selected(self, session_path: str):
+        """Switch to a different session."""
+        if session_path == self.config.session_folder:
+            return
+        self.config.session_folder = session_path
+        self.recording_manager = RecordingManager(self.config)
+        visible = self.recording_manager.get_visible_clips()
+        self.gallery.refresh(visible, Path(self.recording_manager.session_folder))
+        self._clear_playback()
+        self.statusBar().showMessage(f"Session: {session_path}")
+        logger.info("Switched to session: %s", session_path)
+
+    def _change_save_location(self):
+        """Change the base save directory."""
+        new_dir = QFileDialog.getExistingDirectory(
+            self, "Choose Save Location", str(self.config.resolved_base_dir)
         )
+        if new_dir:
+            self.config.base_dir = new_dir
+            save_settings(self.config)
+            self.save_loc_label.setText(new_dir)
+            self._new_session()
+            logger.info("Save location changed to: %s", new_dir)
 
-        if reply == QMessageBox.StandardButton.Yes:
-            base_dir = Path.home() / "GolfSwings"
-            base_dir.mkdir(exist_ok=True)
-            session_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            self.config.session_folder = str(base_dir / session_name)
-            self.recording_manager = RecordingManager(self.config)
+    # ------------------------------------------------------------------
+    # Pin / Share
+    # ------------------------------------------------------------------
 
-            self.gallery.refresh([], Path(self.recording_manager.session_folder))
-            self._clear_playback()
+    def _on_clip_pin_toggled(self, index: int):
+        """Toggle pin on a clip and refresh gallery."""
+        self.recording_manager.toggle_pin(index)
+        self._refresh_gallery()
 
-            self.statusBar().showMessage(f"Session: {self.config.session_folder}")
-            logger.info("New session started: %s", self.config.session_folder)
+    def _on_clip_share_requested(self, index: int):
+        """Open share dialog for a clip."""
+        clip_path = self.recording_manager.get_clip_path(index)
+        if clip_path and clip_path.exists():
+            dlg = ShareDialog(str(clip_path), self)
+            dlg.exec()
+        else:
+            QMessageBox.warning(self, "Share", "Clip file not found.")
+
+    def _on_share_btn_clicked(self):
+        """Share the currently playing clip."""
+        if self.playback_clip_index >= 0:
+            self._on_clip_share_requested(self.playback_clip_index)
+        else:
+            QMessageBox.information(self, "Share", "Select a clip first.")
 
     # ------------------------------------------------------------------
     # Auto-Update

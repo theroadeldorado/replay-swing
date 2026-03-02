@@ -100,7 +100,9 @@ class ComparisonWindow(QDialog):
         left_panel = QVBoxLayout()
         self.left_combo = QComboBox()
         for i, clip in enumerate(self.clips):
-            self.left_combo.addItem(f"Shot {clip['file'].replace('shot_', '').replace('.mp4', '')}", i)
+            star = "\u2605 " if clip.get("pinned") else ""
+            shot_num = clip['file'].replace('shot_', '').replace('.mp4', '')
+            self.left_combo.addItem(f"{star}Shot {shot_num}", i)
         self.left_combo.currentIndexChanged.connect(lambda: self._load_clip("left"))
         left_panel.addWidget(self.left_combo)
 
@@ -136,7 +138,9 @@ class ComparisonWindow(QDialog):
         right_panel = QVBoxLayout()
         self.right_combo = QComboBox()
         for i, clip in enumerate(self.clips):
-            self.right_combo.addItem(f"Shot {clip['file'].replace('shot_', '').replace('.mp4', '')}", i)
+            star = "\u2605 " if clip.get("pinned") else ""
+            shot_num = clip['file'].replace('shot_', '').replace('.mp4', '')
+            self.right_combo.addItem(f"{star}Shot {shot_num}", i)
         if len(self.clips) > 1:
             self.right_combo.setCurrentIndex(1)
         self.right_combo.currentIndexChanged.connect(lambda: self._load_clip("right"))
@@ -191,6 +195,16 @@ class ComparisonWindow(QDialog):
         controls.addWidget(self.speed_combo)
 
         layout.addLayout(controls)
+
+        # Auto-select pinned clips in dropdowns
+        pinned_indices = [i for i, c in enumerate(self.clips) if c.get("pinned")]
+        if pinned_indices:
+            self.left_combo.setCurrentIndex(pinned_indices[0])
+            if len(pinned_indices) > 1:
+                self.right_combo.setCurrentIndex(pinned_indices[1])
+            elif len(self.clips) > 1:
+                other = next((i for i in range(len(self.clips)) if i != pinned_indices[0]), 1)
+                self.right_combo.setCurrentIndex(other)
 
         # Load initial clips
         self._load_clip("left")

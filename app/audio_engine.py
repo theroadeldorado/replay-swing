@@ -16,7 +16,7 @@ from typing import Optional, Dict, List
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from config import AppConfig, TRAINING_DATA_DIR
+from config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ except ImportError:
     SKLEARN_AVAILABLE = False
     logger.info("scikit-learn not available. Using heuristic audio classifier only.")
 
-CLASSIFIER_PATH = TRAINING_DATA_DIR / "audio_classifier.pkl"
+_DEFAULT_TRAINING_DIR = Path.home() / "GolfSwings" / "training_data"
 
 
 # ============================================================================
@@ -156,17 +156,19 @@ class AudioClassifier:
         "impact_ratio", "rise_time",
     ]
 
-    def __init__(self):
+    def __init__(self, training_dir: Path = None):
         self._model_lock = threading.Lock()
         self.mode = "heuristic"
         self.model = None
         self.scaler = None
+        self.training_dir = training_dir or _DEFAULT_TRAINING_DIR
+        self.classifier_path = self.training_dir / "audio_classifier.pkl"
         self._load_model()
 
     def _load_model(self):
-        if SKLEARN_AVAILABLE and CLASSIFIER_PATH.exists():
+        if SKLEARN_AVAILABLE and self.classifier_path.exists():
             try:
-                with open(CLASSIFIER_PATH, "rb") as f:
+                with open(self.classifier_path, "rb") as f:
                     data = pickle.load(f)
                 self.model = data["model"]
                 self.scaler = data["scaler"]
@@ -247,13 +249,13 @@ class AudioClassifier:
             logger.warning("Cannot retrain: scikit-learn not available")
             return False
 
-        TRAINING_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.training_dir.mkdir(parents=True, exist_ok=True)
         extractor = AudioFeatureExtractor()
 
         X_list = []
         y_list = []
 
-        for meta_file in TRAINING_DATA_DIR.glob("trigger_*_meta.json"):
+        for meta_file in self.training_dir.glob("trigger_*_meta.json"):
             try:
                 with open(meta_file, "r") as f:
                     meta = json.load(f)
@@ -296,8 +298,8 @@ class AudioClassifier:
         model.fit(X_scaled, y)
 
         # Save
-        CLASSIFIER_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(CLASSIFIER_PATH, "wb") as f:
+        self.classifier_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.classifier_path, "wb") as f:
             pickle.dump({"model": model, "scaler": scaler, "n_samples": len(X_list)}, f)
 
         with self._model_lock:
@@ -310,9 +312,9 @@ class AudioClassifier:
     @property
     def training_sample_count(self) -> int:
         """Count available training samples."""
-        if not TRAINING_DATA_DIR.exists():
+        if not self.training_dir.exists():
             return 0
-        return len(list(TRAINING_DATA_DIR.glob("trigger_*_meta.json")))
+        return len(list(self.training_dir.glob("trigger_*_meta.json")))
 
 
 # ============================================================================
@@ -333,7 +335,7 @@ class AudioDetector(QThread):
         self._lock = threading.Lock()
 
         self.extractor = AudioFeatureExtractor(config.audio_sample_rate)
-        self.classifier = AudioClassifier()
+        self.classifier = AudioClassifier(training_dir=config.training_data_dir)
 
         # Accumulate chunks for classification window (~93ms at 44.1kHz/1024)
         self._chunk_accumulator: List[np.ndarray] = []
@@ -429,12 +431,13 @@ class AudioDetector(QThread):
     def _save_trigger_snippet(self, features: Dict, confidence: float):
         """Save audio snippet and metadata around trigger for training."""
         try:
-            TRAINING_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            training_dir = self.config.training_data_dir
+            training_dir.mkdir(parents=True, exist_ok=True)
             timestamp = int(time.time() * 1000)
             base_name = f"trigger_{timestamp}"
 
             # Save WAV (default label: shot)
-            wav_path = TRAINING_DATA_DIR / f"{base_name}_shot.wav"
+            wav_path = training_dir / f"{base_name}_shot.wav"
             audio_data = b"".join(self._audio_ring)
             if audio_data:
                 with wave.open(str(wav_path), "wb") as wf:
@@ -444,7 +447,7 @@ class AudioDetector(QThread):
                     wf.writeframes(audio_data)
 
             # Save metadata
-            meta_path = TRAINING_DATA_DIR / f"{base_name}_meta.json"
+            meta_path = training_dir / f"{base_name}_meta.json"
             meta = {
                 "timestamp": timestamp,
                 "confidence": confidence,

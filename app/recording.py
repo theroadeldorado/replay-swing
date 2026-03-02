@@ -14,7 +14,7 @@ from typing import Optional, List, Dict
 import cv2
 import numpy as np
 
-from config import AppConfig, TRAINING_DATA_DIR
+from config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -231,10 +231,11 @@ class RecordingManager:
 
     def _relabel_audio_sample(self, trigger_timestamp: int):
         """Rename _shot.wav to _not_shot.wav and update metadata."""
+        training_dir = self.config.training_data_dir
         base_name = f"trigger_{trigger_timestamp}"
-        shot_wav = TRAINING_DATA_DIR / f"{base_name}_shot.wav"
-        not_shot_wav = TRAINING_DATA_DIR / f"{base_name}_not_shot.wav"
-        meta_file = TRAINING_DATA_DIR / f"{base_name}_meta.json"
+        shot_wav = training_dir / f"{base_name}_shot.wav"
+        not_shot_wav = training_dir / f"{base_name}_not_shot.wav"
+        meta_file = training_dir / f"{base_name}_meta.json"
 
         if shot_wav.exists():
             shot_wav.rename(not_shot_wav)
@@ -275,3 +276,18 @@ class RecordingManager:
                 if clip is target:
                     return i
         return -1
+
+    def toggle_pin(self, index: int) -> bool:
+        """Toggle pinned state on a visible clip. Returns new pinned state."""
+        visible = self.get_visible_clips()
+        if 0 <= index < len(visible):
+            clip = visible[index]
+            clip["pinned"] = not clip.get("pinned", False)
+            self._save_clips_metadata()
+            logger.info("Clip %d pinned=%s", index, clip["pinned"])
+            return clip["pinned"]
+        return False
+
+    def get_pinned_clips(self) -> List[Dict]:
+        """Return visible clips where pinned=True."""
+        return [c for c in self.get_visible_clips() if c.get("pinned")]

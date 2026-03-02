@@ -12,10 +12,11 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QFrame,
     QPushButton, QGridLayout, QScrollArea, QMenu, QTextEdit,
+    QListWidget, QListWidgetItem,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
 from PyQt6.QtGui import (
-    QImage, QPixmap, QCursor, QColor, QPainter, QPen, QTextCursor,
+    QImage, QPixmap, QCursor, QColor, QPainter, QPen, QTextCursor, QIcon,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,113 @@ def composite_grid(frames: Dict[str, np.ndarray], labels: Dict[str, str],
         canvas[y0:y0 + cell_h, x0:x0 + cell_w] = resized
 
     return canvas
+
+
+# ============================================================================
+# Session List Widget
+# ============================================================================
+
+class SessionListWidget(QWidget):
+    """Browsable list of past sessions with shot counts."""
+
+    session_selected = pyqtSignal(str)  # session folder path
+    new_session_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        header = QHBoxLayout()
+        label = QLabel("Sessions")
+        label.setStyleSheet("color: #ccc; font-weight: bold; font-size: 12px;")
+        header.addWidget(label)
+        header.addStretch()
+
+        new_btn = QPushButton("+ New")
+        new_btn.setFixedSize(60, 24)
+        new_btn.setStyleSheet(
+            "QPushButton { background-color: #4a9eff; color: white; border: none; "
+            "border-radius: 4px; font-size: 11px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #5aafff; }"
+        )
+        new_btn.clicked.connect(self.new_session_requested.emit)
+        header.addWidget(new_btn)
+        layout.addLayout(header)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setMaximumHeight(150)
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                background-color: #1a1a1a; border: 1px solid #444; border-radius: 4px;
+                color: #ccc; font-size: 11px;
+            }
+            QListWidget::item { padding: 4px 8px; }
+            QListWidget::item:selected { background-color: #4a9eff; color: white; }
+            QListWidget::item:hover { background-color: #333; }
+        """)
+        self.list_widget.currentRowChanged.connect(self._on_row_changed)
+        layout.addWidget(self.list_widget)
+
+        self._sessions: list = []  # list of (path_str, display_text)
+
+    def scan_sessions(self, base_dir: Path):
+        """Scan base_dir for session folders and populate the list."""
+        import json
+        from datetime import datetime as dt
+
+        self.list_widget.blockSignals(True)
+        self.list_widget.clear()
+        self._sessions.clear()
+
+        if not base_dir.exists():
+            self.list_widget.blockSignals(False)
+            return
+
+        folders = []
+        for d in base_dir.iterdir():
+            if d.is_dir() and len(d.name) >= 10 and d.name[4] == "-":
+                folders.append(d)
+        folders.sort(key=lambda p: p.name, reverse=True)
+
+        for folder in folders:
+            # Count shots from clips.json
+            clips_file = folder / "clips.json"
+            shot_count = 0
+            if clips_file.exists():
+                try:
+                    with open(clips_file, "r") as f:
+                        clips = json.load(f)
+                    shot_count = len([c for c in clips if not c.get("marked_not_shot")])
+                except Exception:
+                    pass
+
+            # Parse date from folder name
+            try:
+                date_obj = dt.strptime(folder.name[:19], "%Y-%m-%d_%H-%M-%S")
+                display = date_obj.strftime("%b %d, %Y %I:%M %p")
+            except (ValueError, IndexError):
+                display = folder.name
+
+            text = f"{display}  ({shot_count} shots)"
+            self._sessions.append((str(folder), text))
+            self.list_widget.addItem(text)
+
+        self.list_widget.blockSignals(False)
+
+    def select_session(self, session_path: str):
+        """Select a session by path."""
+        for i, (path, _) in enumerate(self._sessions):
+            if path == session_path:
+                self.list_widget.blockSignals(True)
+                self.list_widget.setCurrentRow(i)
+                self.list_widget.blockSignals(False)
+                return
+
+    def _on_row_changed(self, row: int):
+        if 0 <= row < len(self._sessions):
+            self.session_selected.emit(self._sessions[row][0])
 
 
 # ============================================================================
@@ -225,12 +333,25 @@ class PiPWindow(QWidget):
         self.camera_btn.setMenu(self.camera_menu)
         title_layout.addWidget(self.camera_btn)
 
-        close_btn = QPushButton("X")
+        close_btn = QPushButton()
         close_btn.setFixedSize(20, 20)
         close_btn.setStyleSheet(
-            "QPushButton { background-color: transparent; color: #888; border: none; font-size: 14px; }"
-            "QPushButton:hover { color: #ff5555; }"
+            "QPushButton { background-color: transparent; border: none; }"
+            "QPushButton:hover { background-color: rgba(255,80,80,0.25); border-radius: 4px; }"
         )
+        # Paint a proper cross icon
+        close_icon = QPixmap(20, 20)
+        close_icon.fill(QColor(0, 0, 0, 0))
+        p = QPainter(close_icon)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#888"), 2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawLine(6, 6, 14, 14)
+        p.drawLine(14, 6, 6, 14)
+        p.end()
+        close_btn.setIcon(QIcon(close_icon))
+        close_btn.setIconSize(QSize(20, 20))
         close_btn.clicked.connect(self.close)
         title_layout.addWidget(close_btn)
 
@@ -250,6 +371,7 @@ class PiPWindow(QWidget):
         self._resize_origin = None  # starting geometry for resize
         self._video_panels: Dict[str, QLabel] = {}  # cam_id -> QLabel
         self._visible_cameras: List[str] = []
+        self._pip_zoom = 1.0  # scroll wheel zoom (1.0 = fit, >1 = crop center)
 
         self.resize(408, 270)
 
@@ -306,10 +428,24 @@ class PiPWindow(QWidget):
         for panel in self._video_panels.values():
             panel.setFixedHeight(panel_h)
 
+    def _apply_zoom_crop(self, frame: np.ndarray) -> np.ndarray:
+        """Crop center of frame based on zoom level. zoom=1.0 means no crop."""
+        if self._pip_zoom <= 1.0:
+            return frame
+        h, w = frame.shape[:2]
+        crop_w = max(1, int(w / self._pip_zoom))
+        crop_h = max(1, int(h / self._pip_zoom))
+        x0 = (w - crop_w) // 2
+        y0 = (h - crop_h) // 2
+        return frame[y0:y0 + crop_h, x0:x0 + crop_w]
+
     def display_frame(self, frame: np.ndarray, camera_id: str = None):
         """Display a frame. If camera_id given, update that panel only."""
         if frame is None:
             return
+
+        # Apply PiP zoom crop
+        frame = self._apply_zoom_crop(frame)
 
         if frame.ndim == 2:
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
@@ -452,6 +588,15 @@ class PiPWindow(QWidget):
         self._resize_edge = None
         self._resize_origin = None
 
+    def wheelEvent(self, event):
+        """Scroll wheel zooms the PiP view (center crop)."""
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self._pip_zoom = min(5.0, self._pip_zoom + 0.15)
+        elif delta < 0:
+            self._pip_zoom = max(1.0, self._pip_zoom - 0.15)
+        event.accept()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit_panels()
@@ -471,6 +616,8 @@ class ThumbnailWidget(QFrame):
     clicked = pyqtSignal(int)
     delete_requested = pyqtSignal(int)
     mark_not_shot_requested = pyqtSignal(int)
+    pin_requested = pyqtSignal(int)
+    share_requested = pyqtSignal(int)
 
     def __init__(self, index: int, clip_info: Dict, thumbnail_path: Optional[Path], parent=None):
         super().__init__(parent)
@@ -497,6 +644,8 @@ class ThumbnailWidget(QFrame):
             pixmap = QPixmap(str(thumbnail_path))
             scaled = pixmap.scaled(160, 90, Qt.AspectRatioMode.KeepAspectRatio,
                                    Qt.TransformationMode.SmoothTransformation)
+            if clip_info.get("pinned"):
+                scaled = self._draw_star_on_pixmap(scaled)
             self.thumb_label.setPixmap(scaled)
         else:
             self.thumb_label.setText("Golf")
@@ -511,8 +660,9 @@ class ThumbnailWidget(QFrame):
             shot_display = str(int(shot_num))
         except (ValueError, TypeError):
             shot_display = shot_num
+        star = "\u2605 " if clip_info.get("pinned") else ""
         cameras_text = f" ({clip_info.get('cameras', 1)} cam)" if clip_info.get("cameras", 1) > 1 else ""
-        self.text_label = QLabel(f"Shot {shot_display}{cameras_text}")
+        self.text_label = QLabel(f"{star}Shot {shot_display}{cameras_text}")
         self.text_label.setObjectName("shotLabel")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.text_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -559,6 +709,20 @@ class ThumbnailWidget(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.index)
 
+    @staticmethod
+    def _draw_star_on_pixmap(pixmap: QPixmap) -> QPixmap:
+        """Draw a gold star indicator on the top-right corner."""
+        result = QPixmap(pixmap)
+        painter = QPainter(result)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = painter.font()
+        font.setPixelSize(18)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor("#FFD700")))
+        painter.drawText(result.width() - 22, 18, "\u2605")
+        painter.end()
+        return result
+
     def _show_context_menu(self, pos):
         menu = QMenu(self)
         menu.setStyleSheet("""
@@ -566,6 +730,15 @@ class ThumbnailWidget(QFrame):
             QMenu::item { padding: 6px 20px; color: #ccc; }
             QMenu::item:selected { background-color: #4a9eff; color: white; }
         """)
+
+        share_action = menu.addAction("Share to Phone")
+        share_action.triggered.connect(lambda: self.share_requested.emit(self.index))
+
+        pin_text = "Unpin Shot" if self.clip_info.get("pinned") else "Pin Shot"
+        pin_action = menu.addAction(pin_text)
+        pin_action.triggered.connect(lambda: self.pin_requested.emit(self.index))
+
+        menu.addSeparator()
 
         delete_action = menu.addAction("Delete Shot")
         delete_action.triggered.connect(lambda: self.delete_requested.emit(self.index))
@@ -586,6 +759,8 @@ class ClipGallery(QScrollArea):
     clip_selected = pyqtSignal(int)
     clip_deleted = pyqtSignal(int)
     clip_mark_not_shot = pyqtSignal(int)
+    clip_pin_toggled = pyqtSignal(int)
+    clip_share_requested = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -620,6 +795,8 @@ class ClipGallery(QScrollArea):
         thumb.clicked.connect(self._on_thumbnail_clicked)
         thumb.delete_requested.connect(self._on_delete_requested)
         thumb.mark_not_shot_requested.connect(self._on_mark_not_shot)
+        thumb.pin_requested.connect(lambda idx: self.clip_pin_toggled.emit(idx))
+        thumb.share_requested.connect(lambda idx: self.clip_share_requested.emit(idx))
 
         row = index // 3
         col = index % 3
@@ -647,6 +824,8 @@ class ClipGallery(QScrollArea):
             thumb.clicked.connect(self._on_thumbnail_clicked)
             thumb.delete_requested.connect(self._on_delete_requested)
             thumb.mark_not_shot_requested.connect(self._on_mark_not_shot)
+            thumb.pin_requested.connect(lambda idx: self.clip_pin_toggled.emit(idx))
+            thumb.share_requested.connect(lambda idx: self.clip_share_requested.emit(idx))
 
             row = i // 3
             col = i % 3
