@@ -65,6 +65,7 @@ class AppConfig:
     audio_sample_rate: int = 44100
     audio_chunk_size: int = 1024
     audio_device_index: Optional[int] = None
+    audio_device_name: str = ""  # saved for matching across reboots (indices can change)
 
     # Storage settings
     base_dir: str = ""  # empty = default ~/GolfSwings
@@ -138,6 +139,7 @@ class AppConfig:
             "primary_camera": self.primary_camera,
             "audio_threshold": self.audio_threshold,
             "audio_device_index": self.audio_device_index,
+            "audio_device_name": self.audio_device_name,
             "auto_ready_enabled": self.auto_ready_enabled,
             "playback_speed": self.playback_speed,
             "pip_position": list(self.pip_position),
@@ -158,6 +160,8 @@ class AppConfig:
             self.audio_threshold = float(data["audio_threshold"])
         if "audio_device_index" in data:
             self.audio_device_index = data["audio_device_index"]
+        if "audio_device_name" in data:
+            self.audio_device_name = data.get("audio_device_name", "")
         if "auto_ready_enabled" in data:
             self.auto_ready_enabled = bool(data["auto_ready_enabled"])
         if "playback_speed" in data:

@@ -28,7 +28,8 @@ export const docSections: DocSection[] = [
       <h3>First Launch</h3>
       <ol>
         <li>The app auto-detects your first USB camera. If no camera is found, connect one and click <strong>Refresh Cameras</strong> in Settings.</li>
-        <li>Select your microphone from the <strong>Audio Device</strong> dropdown in Settings.</li>
+        <li>Select your microphone from the <strong>Audio Device</strong> dropdown in Settings &mdash; a live level meter starts immediately so you can confirm the right mic is active.</li>
+        <li>Adjust the <strong>Threshold</strong> slider until normal room noise stays blue/yellow and a clap or ball strike pushes the bar into red.</li>
         <li>Click <strong>Arm</strong> (or press <kbd>A</kbd>) to begin listening for club impact.</li>
         <li>Take a swing &mdash; the app records automatically and starts looping playback.</li>
       </ol>
@@ -94,9 +95,10 @@ export const docSections: DocSection[] = [
 
       <h3>Tips</h3>
       <ul>
-        <li><strong>DroidCam also provides a virtual microphone</strong> &mdash; useful if your PC doesn&rsquo;t have a mic. The app auto-detects it and labels it "(phone mic)".</li>
+        <li><strong>DroidCam also provides a virtual microphone</strong> &mdash; useful if your PC doesn&rsquo;t have a mic. The app auto-detects it and labels it &ldquo;(phone mic)&rdquo;.</li>
         <li>For the most reliable connection, use <strong>5 GHz Wi-Fi</strong> or a USB tether.</li>
         <li>The app auto-reconnects if the stream drops, with exponential backoff up to 30 seconds.</li>
+        <li><strong>DroidCam single-client limit:</strong> DroidCam only allows one video client at a time. If another app (OBS, browser preview) is connected, close it first. ReplaySwing detects this and reports &ldquo;DroidCam is busy.&rdquo;</li>
       </ul>
     `,
   },
@@ -122,6 +124,15 @@ export const docSections: DocSection[] = [
       <p>Once you&rsquo;ve collected <strong>10+ labeled samples</strong>, the app automatically switches to a RandomForest model trained on your specific environment. This improves accuracy for your room, club type, and mat combination.</p>
       <p>To train: use the <strong>Mark Not Shot</strong> button to label false positives, and take real swings to accumulate positive samples. The classifier retrains automatically when enough data is available.</p>
 
+      <h3>Live Mic Preview</h3>
+      <p>Selecting a microphone from the <strong>Audio Device</strong> dropdown automatically starts a <strong>live level meter</strong> so you can instantly see which mic is picking up sound. Tap or clap near a mic to confirm it&rsquo;s the right one &mdash; no need to arm the system first.</p>
+      <ul>
+        <li>The level bar changes colour as audio approaches the threshold: <strong>blue</strong> (quiet) &rarr; <strong>yellow</strong> (approaching) &rarr; <strong>red</strong> (above threshold &mdash; would trigger when armed).</li>
+        <li>Adjust the <strong>Threshold</strong> slider while watching the bar to dial in the right sensitivity for your room.</li>
+        <li>The preview stops automatically when you <strong>Arm</strong> the system (the main audio detector takes over).</li>
+        <li>Click <strong>Stop</strong> to manually end the preview at any time.</li>
+      </ul>
+
       <h3>Threshold Tuning</h3>
       <p>The <strong>sensitivity slider</strong> (1&ndash;100%) controls how confident the classifier must be before triggering. Lower values trigger more easily (more false positives); higher values are more selective.</p>
       <ul>
@@ -129,6 +140,9 @@ export const docSections: DocSection[] = [
         <li>If you get too many false triggers, increase the threshold.</li>
         <li>If real swings are missed, decrease the threshold or check mic placement.</li>
       </ul>
+
+      <h3>Device Persistence</h3>
+      <p>Your selected microphone and threshold are <strong>saved automatically</strong> and restored when you reopen the app. The device is matched by name, so it survives reboots and USB re-plugging even if system device indices change.</p>
 
       <h3>Microphone Tips</h3>
       <ul>
@@ -433,8 +447,8 @@ export const docSections: DocSection[] = [
       <table>
         <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td>Audio device</td><td>System default</td><td>Microphone input to use for trigger detection</td></tr>
-          <tr><td>Threshold</td><td>30%</td><td>Detection sensitivity (1&ndash;100%)</td></tr>
+          <tr><td>Audio device</td><td>System default</td><td>Microphone input to use for trigger detection (saved by name across reboots)</td></tr>
+          <tr><td>Threshold</td><td>30%</td><td>Detection sensitivity (1&ndash;100%). Use the live level meter to calibrate.</td></tr>
           <tr><td>Sample rate</td><td>44,100 Hz</td><td>Audio sampling frequency</td></tr>
           <tr><td>Chunk size</td><td>1,024</td><td>Audio buffer size</td></tr>
         </tbody>
@@ -479,6 +493,7 @@ export const docSections: DocSection[] = [
           <tr><td>Black/frozen feed</td><td>Close other apps using the camera (Zoom, Teams, OBS). Restart the app.</td></tr>
           <tr><td>Low frame rate</td><td>Lower the resolution in your camera&rsquo;s software, or reduce the FPS setting in ReplaySwing.</td></tr>
           <tr><td>Network camera won&rsquo;t connect</td><td>Verify phone and PC are on the same Wi-Fi. Check the IP and port. Ensure the streaming app is running.</td></tr>
+          <tr><td>DroidCam connects briefly then drops</td><td>Close any other app using DroidCam (OBS, browser, DroidCam client). DroidCam only allows one video client at a time.</td></tr>
           <tr><td>Network camera keeps dropping</td><td>Switch to 5 GHz Wi-Fi or use a USB tether. The app reconnects automatically with up to 30 s backoff.</td></tr>
         </tbody>
       </table>
@@ -489,7 +504,7 @@ export const docSections: DocSection[] = [
         <tbody>
           <tr><td>No audio device listed</td><td>Connect a microphone and click <strong>Refresh Devices</strong>. For DroidCam, make sure the desktop client is installed.</td></tr>
           <tr><td>Too many false triggers</td><td>Increase the threshold slider. Move the mic away from speakers and fans.</td></tr>
-          <tr><td>Swings aren&rsquo;t detected</td><td>Decrease the threshold. Move the mic closer to the hitting area. Try pointing it at the mat.</td></tr>
+          <tr><td>Swings aren&rsquo;t detected</td><td>Use the live level meter to confirm the correct mic is selected &mdash; clap near it and check the bar moves. Decrease the threshold so ball strikes push the bar into red. Move the mic closer to the hitting area.</td></tr>
           <tr><td>PyAudio not installed</td><td>Audio triggering requires PyAudio. If running from source, install it with: <code>pip install pyaudio</code>. On Windows you may need: <code>pip install pipwin &amp;&amp; pipwin install pyaudio</code>. The app still works without it &mdash; use manual trigger (<kbd>T</kbd>) instead.</td></tr>
         </tbody>
       </table>

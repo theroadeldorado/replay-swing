@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 def composite_grid(frames: Dict[str, np.ndarray], labels: Dict[str, str],
-                   target_size: tuple = None) -> np.ndarray:
+                   target_size: tuple = None, primary_id: str = None) -> np.ndarray:
     """Composite multiple camera frames into a grid with labels.
 
     - 1 camera: full frame
@@ -35,6 +35,7 @@ def composite_grid(frames: Dict[str, np.ndarray], labels: Dict[str, str],
     - 3-4 cameras: 2x2 grid
 
     target_size: (width, height) tuple. If None, uses first frame's size or 1280x720.
+    primary_id: camera id of the primary camera; its label is prefixed with '* '.
     """
     cam_ids = list(frames.keys())
     n = len(cam_ids)
@@ -77,10 +78,20 @@ def composite_grid(frames: Dict[str, np.ndarray], labels: Dict[str, str],
         y0 = row * cell_h
 
         frame = frames[cam_id]
-        resized = cv2.resize(frame, (cell_w, cell_h))
+        # Resize preserving aspect ratio, letterbox/pillarbox to fill cell
+        fh, fw = frame.shape[:2]
+        scale = min(cell_w / fw, cell_h / fh)
+        new_w, new_h = int(fw * scale), int(fh * scale)
+        scaled_frame = cv2.resize(frame, (new_w, new_h))
+        resized = np.zeros((cell_h, cell_w, 3), dtype=np.uint8)
+        pad_x = (cell_w - new_w) // 2
+        pad_y = (cell_h - new_h) // 2
+        resized[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = scaled_frame
 
         # Draw label with semi-transparent background bar
         label = labels.get(cam_id, f"Camera {cam_id}")
+        if primary_id is not None and cam_id == primary_id:
+            label = "* " + label
         (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
         bar_h = text_h + 16
         overlay = resized[:bar_h, :].copy()

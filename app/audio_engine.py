@@ -469,6 +469,69 @@ class AudioDetector(QThread):
             self.wait(2000)
 
 
+class MicPreview(QThread):
+    """Lightweight mic preview that emits RMS levels without classification."""
+
+    level_update = pyqtSignal(float)       # 0.0–1.0 RMS level
+    finished_preview = pyqtSignal()
+
+    def __init__(self, device_index, sample_rate=44100, chunk_size=1024, duration=0):
+        super().__init__()
+        self.device_index = device_index
+        self.sample_rate = sample_rate
+        self.chunk_size = chunk_size
+        self.duration = duration  # 0 = run until stop() called
+        self.running = False
+
+    def run(self):
+        if not AUDIO_AVAILABLE:
+            self.finished_preview.emit()
+            return
+
+        self.running = True
+        p = pyaudio.PyAudio()
+        try:
+            kwargs = {
+                "format": pyaudio.paInt16,
+                "channels": 1,
+                "rate": self.sample_rate,
+                "input": True,
+                "frames_per_buffer": self.chunk_size,
+            }
+            if self.device_index is not None:
+                kwargs["input_device_index"] = self.device_index
+            stream = p.open(**kwargs)
+        except Exception as e:
+            logger.error("MicPreview audio error: %s", e)
+            p.terminate()
+            self.finished_preview.emit()
+            return
+
+        deadline = (time.time() + self.duration) if self.duration > 0 else 0
+        try:
+            while self.running:
+                if deadline and time.time() >= deadline:
+                    break
+                try:
+                    data = stream.read(self.chunk_size, exception_on_overflow=False)
+                    samples = np.array(
+                        struct.unpack(f"{len(data) // 2}h", data),
+                        dtype=np.float32,
+                    ) / 32768.0
+                    rms = np.sqrt(np.mean(samples ** 2))
+                    self.level_update.emit(min(1.0, rms * 10))
+                except Exception:
+                    break
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            self.finished_preview.emit()
+
+    def stop(self):
+        self.running = False
+
+
 def enumerate_audio_devices() -> List[Dict]:
     """Return list of available audio input devices."""
     devices = []

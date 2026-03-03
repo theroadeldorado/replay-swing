@@ -18,7 +18,7 @@ const features = [
     icon: AudioLines,
     title: 'Audio-Triggered Capture',
     description:
-      'Detects the sound of club impact and automatically records 2 seconds before and 4 seconds after — hands-free.',
+      'Detects club impact and records automatically. Live mic preview with color-coded level meter lets you pick the right mic and dial in threshold — no guesswork.',
   },
   {
     icon: PictureInPicture2,

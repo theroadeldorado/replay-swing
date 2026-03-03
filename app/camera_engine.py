@@ -210,6 +210,11 @@ class CameraCapture(QThread):
 
         if is_network:
             self.connection_state.emit(self.camera_id, "connecting")
+            # Brief pause for DroidCam — it needs time to release the previous
+            # client session (e.g. from the connection test) before accepting
+            # a new one.  Only applies to known DroidCam port.
+            if ":4747/" in str(self.camera_id):
+                time.sleep(1.0)
             self.cap = self._open_network_camera(self.camera_id)
         else:
             self.cap = self._open_usb_camera(self.camera_id)
@@ -363,17 +368,12 @@ class CameraCapture(QThread):
         Uses FFMPEG backend first to avoid AVFoundation conflicts with USB cameras on macOS.
         Falls back to MJPEGCapture for HTTP URLs when OpenCV backends fail.
         """
-        # Quick HTTP pre-check for busy/HTML responses
+        # TCP-only reachability check — avoids opening a full HTTP stream which
+        # would occupy DroidCam's single-client slot and race with the real
+        # OpenCV connection that follows.
         if url.startswith("http"):
-            reachable, busy, content_type = _check_http_camera(url)
-            if not reachable:
+            if not _tcp_reachable(url):
                 logger.info("Network camera %s: not reachable", url)
-                return None
-            if busy:
-                logger.warning("Network camera %s: DroidCam is busy (another client connected)", url)
-                return None
-            if content_type and "text/html" in content_type:
-                logger.info("Network camera %s: got HTML (not video stream)", url)
                 return None
 
         # FFMPEG first — avoids AVFoundation probing HTTP URLs which can
@@ -571,48 +571,31 @@ def test_droidcam_connection(ip: str) -> tuple:
     return success, message, url
 
 
-def _check_http_camera(url: str, timeout: float = 3.0) -> tuple:
-    """Quick HTTP pre-check for a camera URL.
+def _tcp_reachable(url: str, timeout: float = 3.0) -> bool:
+    """Quick TCP-only reachability check for a camera URL.
 
-    Returns (reachable: bool, busy: bool, content_type: str|None).
+    Does NOT open an HTTP connection — avoids occupying DroidCam's
+    single-client stream slot.
     """
     from urllib.parse import urlparse
     parsed = urlparse(url)
     host, port = parsed.hostname, parsed.port or 80
-
-    # TCP check
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         result = sock.connect_ex((host, port))
         sock.close()
-        if result != 0:
-            return False, False, None
+        return result == 0
     except Exception:
-        return False, False, None
-
-    # HTTP check — detect content type and busy page
-    try:
-        resp = urllib.request.urlopen(url, timeout=timeout)
-        ct = resp.headers.get("Content-Type", "")
-        if "text/html" in ct:
-            body = resp.read(2048).decode("utf-8", errors="replace")
-            resp.close()
-            if "busy" in body.lower():
-                return True, True, ct
-            return True, False, ct
-        resp.close()
-        return True, False, ct
-    except Exception:
-        # TCP connected but HTTP failed — might be RTSP or non-HTTP protocol
-        return True, False, None
+        return False
 
 
 def test_network_camera(url: str) -> tuple:
     """Test if a URL serves video frames.
 
     For DroidCam URLs on port 4747, tries both /video and /mjpegfeed.
-    Fast-fails on busy or unreachable cameras.
+    Fast-fails on unreachable cameras via TCP check (no HTTP pre-check
+    to avoid occupying DroidCam's single-client slot).
     Falls back to MJPEGCapture when OpenCV backends don't support HTTP.
 
     Returns (success: bool, message: str).
@@ -628,22 +611,13 @@ def test_network_camera(url: str) -> tuple:
             urls_to_try.append(url.rsplit("/", 1)[0] + "/mjpegfeed")
 
     for try_url in urls_to_try:
-        # Quick HTTP pre-check: reachable? busy? content type?
-        reachable, busy, content_type = _check_http_camera(try_url)
-
-        if not reachable:
+        # TCP-only reachability check — does not open an HTTP stream,
+        # so DroidCam won't count this as a client session.
+        if try_url.startswith("http") and not _tcp_reachable(try_url):
             logger.info("Camera at %s: not reachable", try_url)
             continue
 
-        if busy:
-            logger.warning("Camera at %s: DroidCam reports busy", try_url)
-            return False, "DroidCam is busy — close other apps connected to it, then try again"
-
-        if content_type and "text/html" in content_type:
-            logger.info("Camera at %s: got HTML response (not a video stream), skipping", try_url)
-            continue
-
-        logger.info("Camera at %s reachable (Content-Type: %s), testing video...", try_url, content_type)
+        logger.info("Camera at %s: reachable, testing video...", try_url)
 
         # Try OpenCV backends (FFMPEG first to avoid AVFoundation conflicts on macOS)
         for backend_name, backend in [("FFMPEG", cv2.CAP_FFMPEG), ("default", cv2.CAP_ANY)]:
@@ -671,6 +645,9 @@ def test_network_camera(url: str) -> tuple:
             logger.info("Testing camera at %s (MJPEGCapture fallback)", try_url)
             try:
                 cap = MJPEGCapture(try_url, timeout=5.0)
+                if cap.busy:
+                    cap.release()
+                    return False, "DroidCam is busy \u2014 close other apps connected to it, then try again"
                 if cap.isOpened():
                     ret, frame = cap.read()
                     if ret and frame is not None:

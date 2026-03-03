@@ -53,7 +53,7 @@ from config import (
     SETTINGS_FILE, TRAINING_DATA_DIR, LOG_DIR,
 )
 from updater import UpdateChecker, UpdateBanner, _load_update_state, _save_update_state
-from audio_engine import AudioDetector, AudioClassifier, enumerate_audio_devices, find_virtual_mic, AUDIO_AVAILABLE
+from audio_engine import AudioDetector, AudioClassifier, MicPreview, enumerate_audio_devices, find_virtual_mic, AUDIO_AVAILABLE
 from camera_engine import CameraCapture, PersonDetector, DroidCamScanner, test_droidcam_connection, test_network_camera, droidcam_url
 from recording import RecordingManager, FrameBuffer
 from drawing_overlay import DrawingOverlay, LineShape, CircleShape
@@ -722,6 +722,7 @@ class CameraSettingsDialog(QDialog):
         """)
 
         self._presets: List[CameraPreset] = [CameraPreset.from_dict(c.to_dict()) for c in config.cameras]
+        self._current_edit_row = -1
 
         layout = QVBoxLayout(self)
 
@@ -827,9 +828,36 @@ class CameraSettingsDialog(QDialog):
             type_str = "USB" if p.type == "usb" else "Network"
             self.camera_list.addItem(f"[{type_str}] {label}")
             self.primary_combo.addItem(f"{label}", p.id)
+        # Restore saved primary camera selection
+        for i in range(self.primary_combo.count()):
+            if self.primary_combo.itemData(i) == self.config.primary_camera:
+                self.primary_combo.setCurrentIndex(i)
+                break
+
+    def _save_row_settings(self, row: int):
+        """Save current form values back to the preset at the given row."""
+        if 0 <= row < len(self._presets):
+            p = self._presets[row]
+            p.label = self.label_input.text()
+            p.zoom = self.zoom_spin.value()
+            p.rotation = int(self.rotation_combo.currentText())
+            p.flip_h = self.flip_h_check.isChecked()
+            p.flip_v = self.flip_v_check.isChecked()
+            # Update list item and primary combo text to reflect label changes
+            label = p.label or f"Camera {p.id}"
+            type_str = "USB" if p.type == "usb" else "Network"
+            item = self.camera_list.item(row)
+            if item:
+                item.setText(f"[{type_str}] {label}")
+            if row < self.primary_combo.count():
+                self.primary_combo.setItemText(row, label)
 
     def _on_selection_changed(self, row: int):
+        # Save previous camera's form values before switching
+        if self._current_edit_row >= 0 and self._current_edit_row != row:
+            self._save_row_settings(self._current_edit_row)
         if 0 <= row < len(self._presets):
+            self._current_edit_row = row
             p = self._presets[row]
             self.label_input.setText(p.label)
             self.zoom_spin.setValue(p.zoom)
@@ -839,14 +867,7 @@ class CameraSettingsDialog(QDialog):
             self.flip_v_check.setChecked(p.flip_v)
 
     def _apply_current_settings(self):
-        row = self.camera_list.currentRow()
-        if 0 <= row < len(self._presets):
-            p = self._presets[row]
-            p.label = self.label_input.text()
-            p.zoom = self.zoom_spin.value()
-            p.rotation = int(self.rotation_combo.currentText())
-            p.flip_h = self.flip_h_check.isChecked()
-            p.flip_v = self.flip_v_check.isChecked()
+        self._save_row_settings(self.camera_list.currentRow())
 
     def _detect_usb(self):
         existing_usb_ids = {p.id for p in self._presets if p.type == "usb"}
@@ -1386,10 +1407,21 @@ class MainWindow(QMainWindow):
             if dev.get("is_virtual") and virtual_mic_index is None:
                 virtual_mic_index = self.audio_device_combo.count() - 1
         if self.config.audio_device_index is not None:
-            for i in range(self.audio_device_combo.count()):
-                if self.audio_device_combo.itemData(i) == self.config.audio_device_index:
-                    self.audio_device_combo.setCurrentIndex(i)
-                    break
+            # Try matching by saved device name first (indices shift across reboots)
+            matched = False
+            if self.config.audio_device_name:
+                for i in range(self.audio_device_combo.count()):
+                    if self.config.audio_device_name in (self.audio_device_combo.itemText(i) or ""):
+                        self.audio_device_combo.setCurrentIndex(i)
+                        self.config.audio_device_index = self.audio_device_combo.itemData(i)
+                        matched = True
+                        break
+            # Fall back to saved index
+            if not matched:
+                for i in range(self.audio_device_combo.count()):
+                    if self.audio_device_combo.itemData(i) == self.config.audio_device_index:
+                        self.audio_device_combo.setCurrentIndex(i)
+                        break
         elif virtual_mic_index is not None:
             # Auto-select phone virtual mic when no device is configured
             self.audio_device_combo.setCurrentIndex(virtual_mic_index)
@@ -1405,7 +1437,23 @@ class MainWindow(QMainWindow):
         refresh_audio_btn.clicked.connect(self._refresh_audio_devices)
         audio_dev_row.addWidget(refresh_audio_btn)
 
+        self.test_mic_btn = QPushButton("Test")
+        self.test_mic_btn.setToolTip("Preview audio level from the selected mic (auto-starts on device change)")
+        self.test_mic_btn.setFixedWidth(50)
+        self.test_mic_btn.clicked.connect(self._test_mic)
+        audio_dev_row.addWidget(self.test_mic_btn)
+
         audio_group_layout.addLayout(audio_dev_row)
+
+        self.mic_preview_bar = QProgressBar()
+        self.mic_preview_bar.setMaximum(100)
+        self.mic_preview_bar.setTextVisible(False)
+        self.mic_preview_bar.setFixedHeight(12)
+        self._mic_preview_level = 0
+        self._update_mic_bar_style()
+        audio_group_layout.addWidget(self.mic_preview_bar)
+
+        self._mic_preview: Optional[MicPreview] = None
 
         thr_row = QHBoxLayout()
         thr_row.addWidget(QLabel("Threshold:"))
@@ -1642,10 +1690,13 @@ class MainWindow(QMainWindow):
 
     def _on_camera_connection_state(self, camera_id, state: str):
         """Handle connection state changes from camera threads."""
+        # Rebuild dropdown and update status for ALL cameras
+        self._rebuild_camera_dropdown()
+        self._update_camera_status()
+        # Update phone button for phone camera
         preset = self._find_phone_preset()
-        if preset is None or camera_id != preset.id:
-            return
-        self._set_phone_btn_state(state)
+        if preset is not None and camera_id == preset.id:
+            self._set_phone_btn_state(state)
 
     def _refresh_phone_btn_state(self):
         """Set phone button state based on current camera status."""
@@ -1670,7 +1721,8 @@ class MainWindow(QMainWindow):
         for preset in self.config.cameras:
             self._start_camera(preset)
 
-        self.live_visible_cameras = {p.id for p in self.config.cameras}
+        # Show only the primary camera initially
+        self.live_visible_cameras = {self.config.primary_camera}
         self._rebuild_camera_dropdown()
         self._update_camera_status()
         self._refresh_phone_btn_state()
@@ -1776,11 +1828,16 @@ class MainWindow(QMainWindow):
     def _on_audio_device_changed(self, idx):
         dev_idx = self.audio_device_combo.currentData()
         self.config.audio_device_index = dev_idx
+        # Save device name for reliable matching across reboots (indices can shift)
+        self.config.audio_device_name = self.audio_device_combo.currentText() or ""
         save_settings(self.config)
         # Restart audio if armed
         if self.is_armed:
             self._stop_audio()
             self._start_audio()
+        else:
+            # Auto-start mic preview so user can see levels immediately
+            self._start_mic_preview()
 
     def _refresh_audio_devices(self):
         """Rescan audio devices and update the combo box."""
@@ -1813,6 +1870,58 @@ class MainWindow(QMainWindow):
         self.audio_device_combo.blockSignals(False)
         logger.info("Audio devices refreshed, %d devices found",
                     self.audio_device_combo.count() - 1)
+
+    def _test_mic(self):
+        """Toggle mic preview on/off."""
+        if self._mic_preview is not None and self._mic_preview.isRunning():
+            self._stop_mic_preview()
+        else:
+            self._start_mic_preview()
+
+    def _start_mic_preview(self):
+        """Start continuous mic preview on the currently selected device."""
+        # Stop any existing preview first
+        if self._mic_preview is not None and self._mic_preview.isRunning():
+            self._mic_preview.stop()
+            self._mic_preview.wait(2000)
+        dev_idx = self.audio_device_combo.currentData()
+        self._mic_preview = MicPreview(device_index=dev_idx, duration=0)
+        self._mic_preview.level_update.connect(self._on_mic_preview_level)
+        self._mic_preview.finished_preview.connect(self._on_mic_preview_finished)
+        self.test_mic_btn.setText("Stop")
+        self._mic_preview.start()
+
+    def _stop_mic_preview(self):
+        """Stop the running mic preview."""
+        if self._mic_preview is not None and self._mic_preview.isRunning():
+            self._mic_preview.stop()
+
+    def _on_mic_preview_level(self, level: float):
+        self._mic_preview_level = int(level * 100)
+        self.mic_preview_bar.setValue(self._mic_preview_level)
+        self._update_mic_bar_style()
+
+    def _on_mic_preview_finished(self):
+        self.test_mic_btn.setText("Test")
+        self.mic_preview_bar.setValue(0)
+        self._mic_preview_level = 0
+        self._update_mic_bar_style()
+        self._mic_preview = None
+
+    def _update_mic_bar_style(self):
+        """Update level bar color: green below threshold, red at/above threshold."""
+        threshold_pct = int(self.config.audio_threshold * 100)
+        level = self._mic_preview_level
+        if level >= threshold_pct and level > 0:
+            color = "#e84c3c"  # red — above threshold
+        elif level > threshold_pct * 0.5 and level > 0:
+            color = "#f0c040"  # yellow — approaching threshold
+        else:
+            color = "#4fc3f7"  # blue — below threshold
+        self.mic_preview_bar.setStyleSheet(f"""
+            QProgressBar {{ background-color: #252525; border: none; border-radius: 4px; }}
+            QProgressBar::chunk {{ background-color: {color}; border-radius: 4px; }}
+        """)
 
     # ------------------------------------------------------------------
     # Frame Handling
@@ -1998,28 +2107,11 @@ class MainWindow(QMainWindow):
                     self.pip_window.display_frame(self._render_drawings_on_frame(frame))
 
         else:
-            # Live feed
+            # Live feed — show one camera at a time
             visible_cams = {cid: f.copy() for cid, f in self.current_frames.items()
                            if cid in self.live_visible_cameras}
 
-            if len(visible_cams) > 1:
-                labels = {}
-                for preset in self.config.cameras:
-                    labels[str(preset.id)] = preset.label or str(preset.id)
-                frame = composite_grid(
-                    {str(k): v for k, v in visible_cams.items()},
-                    labels,
-                )
-                if self.is_recording:
-                    cv2.circle(frame, (50, 50), 20, (0, 0, 255), -1)
-                    cv2.putText(frame, "REC", (80, 60),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                elif self.is_armed:
-                    cv2.circle(frame, (50, 50), 20, (0, 255, 255), -1)
-                    cv2.putText(frame, "ARMED", (80, 60),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                self.video_player.display_frame(frame)
-            elif len(visible_cams) == 1:
+            if visible_cams:
                 frame = next(iter(visible_cams.values()))
                 if self.is_recording:
                     cv2.circle(frame, (50, 50), 20, (0, 0, 255), -1)
@@ -2401,6 +2493,7 @@ class MainWindow(QMainWindow):
         self.is_armed = self.arm_btn.isChecked()
 
         if self.is_armed:
+            self._stop_mic_preview()
             self._start_audio()
             self.arm_btn.setText("Armed")
             self.status_label.setText("\u25cf  Armed - Waiting for shot...")
@@ -2430,6 +2523,7 @@ class MainWindow(QMainWindow):
         threshold = value / 100.0
         self.config.audio_threshold = threshold
         self.threshold_label.setText(f"{value}%")
+        self._update_mic_bar_style()
 
         if self.audio_detector:
             self.audio_detector.set_threshold(threshold)
@@ -2552,15 +2646,58 @@ class MainWindow(QMainWindow):
             self.live_btn.setStyleSheet("")
 
     def _rebuild_camera_dropdown(self):
-        """Rebuild the camera dropdown menu from connected cameras only."""
+        """Rebuild the camera dropdown menu — single-select camera switcher."""
         self.camera_dropdown_menu.clear()
-        connected = [p for p in self.config.cameras if p.id in self.current_frames]
-        for preset in connected:
-            action = self.camera_dropdown_menu.addAction(preset.label or str(preset.id))
+        for preset in self.config.cameras:
+            label = preset.label or str(preset.id)
+            is_primary = (preset.id == self.config.primary_camera)
+            is_connected = preset.id in self.current_frames
+            is_active = preset.id in self.live_visible_cameras
+
+            display = f"\u2605 {label}" if is_primary else label
+            if not is_connected:
+                display += " (connecting...)"
+
+            action = self.camera_dropdown_menu.addAction(display)
             action.setCheckable(True)
-            action.setChecked(preset.id in self.live_visible_cameras)
-            action.toggled.connect(lambda checked, pid=preset.id: self._on_camera_visibility_toggled(pid, checked))
+            action.setChecked(is_active)
+            if is_connected:
+                action.triggered.connect(lambda checked, pid=preset.id: self._switch_to_camera(pid))
+            else:
+                action.setEnabled(False)
+
+        # "Set Primary" submenu
+        if len(self.config.cameras) > 1:
+            self.camera_dropdown_menu.addSeparator()
+            primary_menu = self.camera_dropdown_menu.addMenu("Set Primary")
+            primary_menu.setStyleSheet(
+                "QMenu { background-color: #2d2d2d; border: 1px solid #444; border-radius: 4px; padding: 4px; }"
+                "QMenu::item { padding: 6px 20px; color: #ccc; }"
+                "QMenu::item:selected { background-color: #4a9eff; color: white; }"
+                "QMenu::indicator { width: 14px; height: 14px; }"
+                "QMenu::indicator:checked { background-color: #4a9eff; border: 1px solid #4a9eff; border-radius: 2px; }"
+                "QMenu::indicator:unchecked { background-color: #1a1a1a; border: 1px solid #555; border-radius: 2px; }"
+            )
+            for preset in self.config.cameras:
+                label = preset.label or str(preset.id)
+                action = primary_menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(preset.id == self.config.primary_camera)
+                action.triggered.connect(lambda checked, pid=preset.id: self._set_primary_camera(pid))
+
         self._update_camera_dropdown_text()
+
+    def _switch_to_camera(self, camera_id):
+        """Switch live view to a single camera."""
+        self.live_visible_cameras = {camera_id}
+        self._rebuild_camera_dropdown()
+        self._sync_pip_cameras()
+
+    def _set_primary_camera(self, camera_id):
+        """Set a new primary camera, save config, and rebuild dropdown."""
+        self.config.primary_camera = camera_id
+        save_settings(self.config)
+        self._rebuild_camera_dropdown()
 
     def _on_camera_visibility_toggled(self, cam_id, checked: bool):
         """Toggle a camera's visibility in the live feed."""
@@ -2577,14 +2714,20 @@ class MainWindow(QMainWindow):
         self._sync_pip_cameras()
 
     def _update_camera_dropdown_text(self):
-        """Update dropdown button text and visibility based on connected cameras."""
-        connected = [p for p in self.config.cameras if p.id in self.current_frames]
-        total = len(connected)
-        visible = len([c for c in connected if c.id in self.live_visible_cameras])
-        # Hide dropdown when 0-1 connected cameras — no selection needed
+        """Update dropdown button text to show active camera name."""
+        total = len(self.config.cameras)
         self.camera_dropdown_btn.setVisible(total > 1)
         if total > 1:
-            self.camera_dropdown_btn.setText(f"Cameras ({visible}/{total})")
+            # Show the name of the currently active camera
+            active_label = None
+            for p in self.config.cameras:
+                if p.id in self.live_visible_cameras:
+                    active_label = p.label or str(p.id)
+                    break
+            if active_label:
+                self.camera_dropdown_btn.setText(f"\u25BC {active_label}")
+            else:
+                self.camera_dropdown_btn.setText("Cameras")
 
     # ------------------------------------------------------------------
     # Detection Tab
@@ -2644,8 +2787,11 @@ class MainWindow(QMainWindow):
             self.config.cameras = new_presets
             self.config.primary_camera = primary
             save_settings(self.config)
-            # Keep visible cameras that still exist, add any newly added ones
-            self.live_visible_cameras = (self.live_visible_cameras & new_ids) | (new_ids - old_ids)
+            # Show the active camera if it still exists, otherwise show primary
+            if not (self.live_visible_cameras & new_ids):
+                self.live_visible_cameras = {primary}
+            else:
+                self.live_visible_cameras = self.live_visible_cameras & new_ids
             self._rebuild_camera_dropdown()
             self._update_camera_status()
             self._refresh_phone_btn_state()

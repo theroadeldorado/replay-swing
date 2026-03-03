@@ -114,6 +114,8 @@ The audio classifier analyses 12 spectral features (crest factor, impact ratio, 
 - **Heuristic mode** (default): Hand-tuned rules, threshold configurable via slider (1–100%, default 30%).
 - **Learned mode**: RandomForest auto-trains when 10+ labeled samples exist in `~/GolfSwings/training_data/`.
 
+**Live Mic Preview**: Selecting a mic from the dropdown auto-starts a live level meter — the bar changes color from blue (quiet) → yellow (approaching threshold) → red (above threshold). This lets you quickly find the right mic and calibrate the threshold without arming. Your device choice is saved by name so it survives reboots.
+
 **Tips**: Point the mic toward the hitting area, 3–6 feet away. Increase threshold if you get false triggers; decrease if swings are missed.
 
 ### Drawing Tools
