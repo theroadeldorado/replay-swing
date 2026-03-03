@@ -360,9 +360,9 @@ export const docSections: DocSection[] = [
     id: 'pin-favorite',
     title: 'Pin / Favorite Shots',
     iconName: 'Star',
-    content: \`
+    content: `
       <h3>Pinning Clips</h3>
-      <p>Right-click any clip thumbnail in the Gallery and select <strong>Pin Shot</strong> to mark it as a favorite. A gold star (\u2605) appears on the thumbnail and in the clip label.</p>
+      <p>Right-click any clip thumbnail in the Gallery and select <strong>Pin Shot</strong> to mark it as a favorite. A gold star (&#9733;) appears on the thumbnail and in the clip label.</p>
 
       <h3>Using Pinned Clips</h3>
       <ul>
@@ -372,13 +372,13 @@ export const docSections: DocSection[] = [
 
       <h3>Unpinning</h3>
       <p>Right-click the pinned thumbnail again and select <strong>Unpin Shot</strong>. The pin state is saved in <code>clips.json</code> and persists across sessions.</p>
-    \`,
+    `,
   },
   {
     id: 'qr-share',
     title: 'Share to Phone',
     iconName: 'QrCode',
-    content: \`
+    content: `
       <h3>Overview</h3>
       <p>Share any recorded clip directly to your phone without cables, cloud uploads, or third-party apps. The app starts a temporary local web server and generates a QR code that your phone can scan to download the MP4.</p>
 
@@ -396,7 +396,7 @@ export const docSections: DocSection[] = [
         <li>Your phone and PC must be on the <strong>same WiFi network</strong>.</li>
         <li>The <code>qrcode</code> Python package must be installed (included in the default installer). If missing, the URL is still shown as copyable text.</li>
       </ul>
-    \`,
+    `,
   },
   {
     id: 'keyboard-shortcuts',
